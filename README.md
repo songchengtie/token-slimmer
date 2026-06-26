@@ -11,7 +11,9 @@ Client → Token Slimmer → Upstream API (One-API / OpenAI / anything)
 
 ## Why you need this
 
-If you use LLM agents (Claude Code, Hermes, Cursor, etc.), **90%+ of your token spend is on input** — tools schemas, tool outputs, system prompts sent over and over. Thousands of tokens per turn, burned for nothing.
+If you use **LLM agents** (Hermes, Claude Code, Cursor, OpenClaw, etc.), **90%+ of your token spend is on input** — tools schemas, tool outputs, system prompts sent over and over. Thousands of tokens per turn, burned for nothing.
+
+**Hermes and OpenClaw** are especially heavy: they send the full tools definition on every request, and tool outputs can be 50K+ tokens per turn. Token Slimmer is designed specifically for this pattern.
 
 Token Slimmer sits between your client and the API, automatically compressing the waste:
 
@@ -61,6 +63,13 @@ providers:
     api_mode: chat_completions
 ```
 
+### OpenClaw
+
+```yaml
+# openclaw config
+api_base: http://localhost:3999
+```
+
 ### Claude Code / any OpenAI client
 
 ```bash
@@ -72,7 +81,7 @@ export OPENAI_BASE_URL=http://localhost:3999/v1
 ```bash
 curl http://localhost:3999/v1/chat/completions \
   -H "Content-Type: application/json" \
-  -H "Authorization: Bearer $API_KEY" \
+  -H "Authorization: Bearer *** \
   -d '{"model":"gpt-4","messages":[{"role":"user","content":"hello"}]}'
 ```
 
