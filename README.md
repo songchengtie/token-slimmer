@@ -1,54 +1,54 @@
 # 🪢 Token Slimmer
 
-> **LLM 请求压缩代理** — 放在任意 OpenAI 兼容客户端前面，**省 50-60% 输入 token**，不改一行代码。
+> **LLM request compression proxy** — drop it in front of any OpenAI-compatible client and **save 50-60% on input tokens**. Zero code changes.
 
 ```
-客户端 → Token Slimmer → 上游 API (One-API / OpenAI / 任意)
-         ↕ 省 58.8% tokens
+Client → Token Slimmer → Upstream API (One-API / OpenAI / anything)
+         ↕ saves 58.8% tokens
 ```
 
 ---
 
-## 为什么你需要这个
+## Why you need this
 
-如果你在用 LLM agent（Claude Code、Hermes、Cursor 等），**90% 以上的 token 都花在输入上**——tools schema、tool output、system prompt 反复发送。每轮对话几千上万 token 就这么白白烧掉。
+If you use LLM agents (Claude Code, Hermes, Cursor, etc.), **90%+ of your token spend is on input** — tools schemas, tool outputs, system prompts sent over and over. Thousands of tokens per turn, burned for nothing.
 
-Token Slimmer 在你和 API 之间插一层，自动压缩这些冗余：
+Token Slimmer sits between your client and the API, automatically compressing the waste:
 
-| 你关心什么 | Token Slimmer 做什么 |
+| You care about | Token Slimmer does |
 |-----------|-------------------|
-| 💰 **省钱** | 输入 token 省 50-60%，API 费用直接砍半 |
-| ⚡ **更快** | 传输数据量减少，首 token 延迟降低 |
-| 🔧 **零配置** | 改一行 base_url 就接入，不改客户端代码 |
-| 🔒 **安全** | 纯文本变换，不改语义，不改输出 |
+| 💰 **Cost** | Cuts input tokens by 50-60%, halves API bills |
+| ⚡ **Speed** | Less data to transfer, lower time-to-first-token |
+| 🔧 **Zero config** | Change one line (`base_url`) and you're in |
+| 🔒 **Safe** | Pure text transforms — no semantic changes, no output tampering |
 
 ---
 
-## 效果实测
+## Benchmarks
 
-| 项目 | 压缩前 | 压缩后 | 节省 |
+| Item | Before | After | Savings |
 |------|--------|--------|:----:|
 | **Prompt tokens** | 1,190 | 490 | **58.8%** |
-| **Tools schema（每轮）** | ~15K | ~6K | **~9K** |
-| **Tool output（每轮）** | ~53K | ~30K | **~23K** |
+| **Tools schema (per turn)** | ~15K | ~6K | **~9K** |
+| **Tool output (per turn)** | ~53K | ~30K | **~23K** |
 
-> 消息越大省得越多。实测 39 条消息的对话从 53,008 → 29,885 tokens。
+> Bigger messages save more. A real 39-message conversation went from 53,008 → 29,885 tokens.
 
 ---
 
-## 一行启动
+## One-liner start
 
 ```bash
 npm install && node server.js
 ```
 
-默认监听 http://localhost:3999，转发到 http://127.0.0.1:3000。
+Listens on `http://localhost:3999`, forwards to `http://127.0.0.1:3000`.
 
 ---
 
-## 接入方式
+## How to connect
 
-把客户端的 base_url 改成 http://localhost:3999 即可：
+Point your client's `base_url` to `http://localhost:3999`:
 
 ### Hermes
 
@@ -56,61 +56,61 @@ npm install && node server.js
 # config.yaml
 providers:
   - name: slimmer
-    api_key: 你的key
+    api_key: your-key
     base_url: http://localhost:3999
     api_mode: chat_completions
 ```
 
-### Claude Code / 任意 OpenAI 客户端
+### Claude Code / any OpenAI client
 
 ```bash
 export OPENAI_BASE_URL=http://localhost:3999/v1
 ```
 
-### curl 测试
+### curl test
 
 ```bash
 curl http://localhost:3999/v1/chat/completions \
   -H "Content-Type: application/json" \
-  -H "Authorization: Bearer 你的key" \
+  -H "Authorization: Bearer $API_KEY" \
   -d '{"model":"gpt-4","messages":[{"role":"user","content":"hello"}]}'
 ```
 
 ---
 
-## 配置
+## Configuration
 
-| 环境变量 | 默认值 | 说明 |
+| Env var | Default | Description |
 |---------|--------|------|
-| UPSTREAM_URL | http://127.0.0.1:3000 | 上游 API 地址 |
-| PORT | 3999 | 本地监听端口 |
-| SLIM_TOOLS | 1 | 精简 tools schema（关掉设 0） |
-| COMPRESS_CONTENT | 1 | 压缩 tool output（关掉设 0） |
-| STRIP_TOOLS | 1 | 剥离 tools 定义 + 心跳（关掉设 0） |
-| HEARTBEAT_INTERVAL | 3 | 每 N 次请求发一次完整 tools |
+| `UPSTREAM_URL` | `http://127.0.0.1:3000` | Upstream API endpoint |
+| `PORT` | `3999` | Local listen port |
+| `SLIM_TOOLS` | `1` | Slim tools schemas (set `0` to disable) |
+| `COMPRESS_CONTENT` | `1` | Compress tool outputs (set `0` to disable) |
+| `STRIP_TOOLS` | `1` | Strip tools definitions + heartbeat (set `0` to disable) |
+| `HEARTBEAT_INTERVAL` | `3` | Send full tools every N requests |
 
 ---
 
-## 压缩原理
+## How it works
 
-### 1. Tools schema 瘦身
-删掉 examples、default、title、$schema 等冗余字段，description 截短。每轮省 ~9K tokens。
+### 1. Tools schema slimming
+Removes `examples`, `default`, `title`, `$schema` and other redundant fields. Truncates descriptions. Saves ~9K tokens per turn.
 
-### 2. Tool output 压缩
-根据内容类型自动选择最优策略：
+### 2. Tool output compression
+Auto-detects content type and picks the best strategy:
 
-| 类型 | 策略 | 效果 |
-|------|------|------|
-| JSON | minify + 列式压缩 | 省 40-60% |
-| 代码 | 去 ANSI 码、合并空行、截断超长行 | 省 30-50% |
-| 日志 | 去分隔线、保留关键行 | 省 50-70% |
-| 散文 | 去多余空格、截断 | 省 10-20% |
+| Type | Strategy | Savings |
+|------|----------|---------|
+| JSON | minify + columnar compression | 40-60% |
+| Code | strip ANSI codes, merge blank lines, truncate long lines | 30-50% |
+| Logs | strip separators, keep key lines | 50-70% |
+| Prose | strip extra whitespace, truncate | 10-20% |
 
-### 3. JSON 内部钻取
-解析 tool result 的 output 字段，分类压缩后再包装回去。
+### 3. JSON inner drilling
+Parses the `output` field inside tool results, compresses it by type, then re-wraps.
 
-### 4. Tools 剥离 + 心跳
-首次请求发送完整 tools 定义，后续请求剥离，每 N 次发一次心跳刷新。每轮省 ~314 tokens。
+### 4. Tools stripping + heartbeat
+Sends full tools definition on the first request, strips them on subsequent ones, sends a heartbeat every N requests to refresh. Saves ~314 tokens per turn.
 
 ---
 
@@ -122,25 +122,25 @@ docker run -d -p 3999:3999 \
   token-slimmer
 ```
 
-或用项目自带的 docker-compose.yml。
+Or use the included `docker-compose.yml`.
 
 ---
 
-## 和直接调 API 有什么区别？
+## Direct API vs Slimmer
 
 ```
-直接调 API:  每轮 15K tokens → 15K tokens (100%)
-用 Slimmer:  每轮 15K tokens →  6K tokens  (40%)
-                             省 9K tokens  (60%)
+Direct API:   15K tokens/turn → 15K tokens (100%)
+With Slimmer: 15K tokens/turn →  6K tokens  (40%)
+                                save 9K      (60%)
 ```
 
-数字不会骗人。省下来的 token 就是省下来的钱。
+Numbers don't lie. Saved tokens = saved money.
 
 ---
 
-## 项目状态
+## Status
 
-✅ 可用 — 已在生产环境（Hermes + One-API）验证
+✅ Production-ready — verified with Hermes + One-API in real use.
 
 ---
 
