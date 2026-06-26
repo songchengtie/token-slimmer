@@ -1,6 +1,6 @@
 # Token Slimmer
 
-[Simplified Chinese](README.zh-CN.md)
+[简体中文](README.zh-CN.md)
 
 Token Slimmer is an OpenAI-compatible proxy for LLM agents. It provides Token X-Ray observability, slims repeated tool schemas, compresses large tool/function outputs, and can optionally summarize repeated large outputs with a local cache.
 
