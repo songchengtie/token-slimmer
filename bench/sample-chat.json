@@ -1,0 +1,67 @@
+{
+  "model": "gpt-test",
+  "messages": [
+    {
+      "role": "system",
+      "content": "You are a coding agent. Be concise and preserve exact file paths."
+    },
+    {
+      "role": "user",
+      "content": "Inspect the repository and explain why tests are failing."
+    },
+    {
+      "role": "tool",
+      "tool_call_id": "call_1",
+      "content": "{\n  \"output\": \"2026-06-26 10:00:00 INFO starting test run\\n2026-06-26 10:00:01 INFO loading C:\\\\repo\\\\src\\\\index.js\\n2026-06-26 10:00:02 ERROR failed assertion in C:\\\\repo\\\\src\\\\index.js:42\\n    at runTest (C:\\\\repo\\\\test\\\\index.test.js:12:3)\\n2026-06-26 10:00:03 INFO finished with exit code 1\\n\"\n}"
+    }
+  ],
+  "tools": [
+    {
+      "type": "function",
+      "function": {
+        "name": "read_file",
+        "description": "Read a UTF-8 text file from the workspace and return its contents. Use this when exact source context is required.",
+        "parameters": {
+          "$schema": "http://json-schema.org/draft-07/schema#",
+          "title": "ReadFileInput",
+          "type": "object",
+          "properties": {
+            "path": {
+              "title": "Path",
+              "type": "string",
+              "description": "Absolute path to the file.",
+              "default": "",
+              "examples": ["C:\\\\repo\\\\server.js"]
+            }
+          },
+          "required": ["path"],
+          "markdownDescription": "Read files only inside the workspace."
+        }
+      }
+    },
+    {
+      "type": "function",
+      "function": {
+        "name": "run_command",
+        "description": "Run a shell command and return stdout, stderr, and the exit code.",
+        "parameters": {
+          "type": "object",
+          "title": "RunCommandInput",
+          "properties": {
+            "command": {
+              "type": "string",
+              "description": "Command to execute.",
+              "examples": ["npm test"]
+            },
+            "timeout_ms": {
+              "type": "integer",
+              "description": "Maximum runtime in milliseconds.",
+              "default": 10000
+            }
+          },
+          "required": ["command"]
+        }
+      }
+    }
+  ]
+}

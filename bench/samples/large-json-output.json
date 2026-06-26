@@ -1,0 +1,45 @@
+{
+  "model": "gpt-test",
+  "messages": [
+    {
+      "role": "system",
+      "content": "You are a coding agent. Preserve JSON keys and important diagnostic fields."
+    },
+    {
+      "role": "assistant",
+      "content": null,
+      "tool_calls": [
+        {
+          "id": "call_search",
+          "type": "function",
+          "function": {
+            "name": "search_repo",
+            "arguments": "{\"query\":\"token accounting\"}"
+          }
+        }
+      ]
+    },
+    {
+      "role": "tool",
+      "tool_call_id": "call_search",
+      "content": "{\n  \"query\": \"token accounting\",\n  \"matches\": [\n    { \"file\": \"C:\\\\repo\\\\server.js\", \"line\": 42, \"kind\": \"header\", \"text\": \"x-token-slimmer-saved-estimate\", \"context\": \"response header emitted for each proxied request\" },\n    { \"file\": \"C:\\\\repo\\\\server.js\", \"line\": 43, \"kind\": \"header\", \"text\": \"x-token-slimmer-breakdown\", \"context\": \"schema output strip accounting breakdown\" },\n    { \"file\": \"C:\\\\repo\\\\lib\\\\slimmer.js\", \"line\": 205, \"kind\": \"function\", \"text\": \"processChatBody\", \"context\": \"computes before and after token estimates\" },\n    { \"file\": \"C:\\\\repo\\\\lib\\\\slimmer.js\", \"line\": 237, \"kind\": \"field\", \"text\": \"toolSchemaSlimming\", \"context\": \"schema savings category\" },\n    { \"file\": \"C:\\\\repo\\\\lib\\\\slimmer.js\", \"line\": 238, \"kind\": \"field\", \"text\": \"toolOutputCompression\", \"context\": \"tool result savings category\" },\n    { \"file\": \"C:\\\\repo\\\\lib\\\\slimmer.js\", \"line\": 239, \"kind\": \"field\", \"text\": \"toolsStripping\", \"context\": \"aggressive mode savings category\" },\n    { \"file\": \"C:\\\\repo\\\\README.md\", \"line\": 58, \"kind\": \"docs\", \"text\": \"Response Headers\", \"context\": \"documents token estimate headers\" },\n    { \"file\": \"C:\\\\repo\\\\test\\\\slimmer.test.js\", \"line\": 90, \"kind\": \"test\", \"text\": \"safe mode is default and never strips tools\", \"context\": \"mode boundary coverage\" },\n    { \"file\": \"C:\\\\repo\\\\test\\\\proxy.test.js\", \"line\": 41, \"kind\": \"test\", \"text\": \"custom headers\", \"context\": \"provider header forwarding coverage\" },\n    { \"file\": \"C:\\\\repo\\\\bench\\\\bench.js\", \"line\": 18, \"kind\": \"bench\", \"text\": \"Original estimated prompt tokens\", \"context\": \"offline benchmark output\" }\n  ],\n  \"summary\": {\n    \"files_scanned\": 34,\n    \"matches_returned\": 10,\n    \"truncated\": false,\n    \"command\": \"rg -n token accounting C:\\\\repo\"\n  }\n}"
+    }
+  ],
+  "tools": [
+    {
+      "type": "function",
+      "function": {
+        "name": "search_repo",
+        "description": "Search repository files and return structured JSON matches.",
+        "parameters": {
+          "type": "object",
+          "title": "SearchInput",
+          "properties": {
+            "query": { "type": "string", "title": "Query", "default": "", "examples": ["token accounting"] }
+          },
+          "required": ["query"]
+        }
+      }
+    }
+  ]
+}

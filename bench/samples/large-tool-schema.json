@@ -1,0 +1,144 @@
+{
+  "model": "gpt-test",
+  "messages": [
+    {
+      "role": "system",
+      "content": "You are a repository automation agent. Use tools carefully and preserve exact file paths, commands, and error messages."
+    },
+    {
+      "role": "user",
+      "content": "Plan and implement a small compatibility fix, then run tests."
+    }
+  ],
+  "tool_choice": "auto",
+  "tools": [
+    {
+      "type": "function",
+      "function": {
+        "name": "read_file",
+        "description": "Read a UTF-8 text file from the workspace. Return exact contents with line endings preserved so the agent can reason about implementation details and tests.",
+        "parameters": {
+          "$schema": "http://json-schema.org/draft-07/schema#",
+          "title": "ReadFileInput",
+          "type": "object",
+          "properties": {
+            "path": {
+              "title": "Path",
+              "type": "string",
+              "description": "Absolute path to the file that should be read.",
+              "markdownDescription": "Use an absolute path inside the workspace.",
+              "default": "",
+              "examples": ["C:\\repo\\server.js", "C:\\repo\\lib\\slimmer.js"]
+            },
+            "start_line": {
+              "title": "Start line",
+              "type": "integer",
+              "description": "Optional one-based first line to return.",
+              "default": 1,
+              "examples": [1, 20, 100]
+            },
+            "end_line": {
+              "title": "End line",
+              "type": "integer",
+              "description": "Optional one-based final line to return.",
+              "default": 200,
+              "examples": [80, 200, 500]
+            }
+          },
+          "required": ["path"],
+          "deprecated": false,
+          "examples": [{ "path": "C:\\repo\\server.js" }]
+        }
+      }
+    },
+    {
+      "type": "function",
+      "function": {
+        "name": "run_command",
+        "description": "Run a shell command in the workspace and return stdout, stderr, and exit status. Use for tests, benchmarks, lint, git status, and repository inspection.",
+        "parameters": {
+          "$schema": "http://json-schema.org/draft-07/schema#",
+          "title": "RunCommandInput",
+          "type": "object",
+          "properties": {
+            "command": {
+              "title": "Command",
+              "type": "string",
+              "description": "Command line to execute.",
+              "default": "",
+              "examples": ["npm test", "npm run bench", "git status --short"]
+            },
+            "cwd": {
+              "title": "Working directory",
+              "type": "string",
+              "description": "Absolute working directory.",
+              "default": "C:\\repo",
+              "examples": ["C:\\repo"]
+            },
+            "timeout_ms": {
+              "title": "Timeout",
+              "type": "integer",
+              "description": "Maximum runtime in milliseconds.",
+              "default": 10000,
+              "examples": [10000, 120000]
+            }
+          },
+          "required": ["command"],
+          "markdownDescription": "Prefer short deterministic commands.",
+          "deprecated": false
+        }
+      }
+    },
+    {
+      "type": "function",
+      "function": {
+        "name": "apply_patch",
+        "description": "Apply a unified patch to source files. Use only after understanding the current code and keeping edits scoped to the requested behavior.",
+        "parameters": {
+          "$schema": "http://json-schema.org/draft-07/schema#",
+          "title": "ApplyPatchInput",
+          "type": "object",
+          "properties": {
+            "patch": {
+              "title": "Patch",
+              "type": "string",
+              "description": "Patch text beginning with Begin Patch and ending with End Patch.",
+              "default": "",
+              "examples": ["*** Begin Patch\\n*** Update File: server.js\\n*** End Patch"]
+            }
+          },
+          "required": ["patch"],
+          "examples": [{ "patch": "*** Begin Patch\\n*** End Patch" }]
+        }
+      }
+    },
+    {
+      "type": "function",
+      "function": {
+        "name": "search_repo",
+        "description": "Search repository files using ripgrep-compatible patterns and return matching lines with file paths. Use this before editing shared code.",
+        "parameters": {
+          "title": "SearchRepoInput",
+          "type": "object",
+          "properties": {
+            "query": {
+              "title": "Query",
+              "type": "string",
+              "description": "Search pattern.",
+              "examples": ["processChatBody", "CAPTURE_REQUESTS", "stream: true"]
+            },
+            "glob": {
+              "title": "Glob",
+              "type": "string",
+              "description": "Optional file glob to narrow search.",
+              "default": "**/*",
+              "examples": ["*.js", "test/*.js"]
+            }
+          },
+          "required": ["query"],
+          "deprecated": false
+        }
+      }
+    }
+  ]
+}

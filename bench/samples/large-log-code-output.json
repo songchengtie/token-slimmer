@@ -1,0 +1,36 @@
+{
+  "model": "gpt-test",
+  "messages": [
+    {
+      "role": "system",
+      "content": "You are a coding agent. Preserve failing commands, file paths, stack traces, and exit codes."
+    },
+    {
+      "role": "user",
+      "content": "Run tests and diagnose the failing proxy behavior."
+    },
+    {
+      "role": "tool",
+      "tool_call_id": "call_tests",
+      "content": "$ npm test\n\n> token-slimmer@0.2.0 test\n> node --test\n\n2026-06-26T10:00:00.000Z INFO loading test/proxy.test.js\n2026-06-26T10:00:00.010Z INFO starting proxy forwards chat completions\n2026-06-26T10:00:00.020Z INFO upstream received POST /v1/chat/completions\n2026-06-26T10:00:00.030Z INFO checking custom provider headers\n2026-06-26T10:00:00.040Z INFO checking token estimate headers\n2026-06-26T10:00:00.050Z INFO completed proxy forwards chat completions\n2026-06-26T10:00:00.060Z INFO starting streaming chat completions are proxied as streams\n2026-06-26T10:00:00.070Z INFO upstream received stream request\n2026-06-26T10:00:00.080Z ERROR AssertionError [ERR_ASSERTION]: expected status 201 but received 200\n    at TestContext.<anonymous> (C:\\repo\\test\\proxy.test.js:143:10)\n    at process.processTicksAndRejections (node:internal/process/task_queues:95:5)\n    at async Test.run (node:internal/test_runner/test:632:9)\n    at async Test.processPendingSubtests (node:internal/test_runner/test:374:7)\nactual: 200\nexpected: 201\noperator: strictEqual\n2026-06-26T10:00:00.090Z WARN stream response status was overwritten after headers copied\n2026-06-26T10:00:00.100Z INFO dumping relevant code\nfunction sendUpstreamResponse(upstreamRes, res, report, stream) {\n  copyResponseHeaders(upstreamRes, res);\n  if (report) setReportHeaders(res, report);\n  res.status(upstreamRes.status);\n  if (stream && upstreamRes.body) {\n    Readable.fromWeb(upstreamRes.body).pipe(res);\n    return;\n  }\n  const text = await upstreamRes.text();\n  res.send(text);\n}\n2026-06-26T10:00:00.110Z INFO repeated progress line 001\n2026-06-26T10:00:00.111Z INFO repeated progress line 002\n2026-06-26T10:00:00.112Z INFO repeated progress line 003\n2026-06-26T10:00:00.113Z INFO repeated progress line 004\n2026-06-26T10:00:00.114Z INFO repeated progress line 005\n2026-06-26T10:00:00.115Z INFO repeated progress line 006\n2026-06-26T10:00:00.116Z INFO repeated progress line 007\n2026-06-26T10:00:00.117Z INFO repeated progress line 008\n2026-06-26T10:00:00.118Z INFO repeated progress line 009\n2026-06-26T10:00:00.119Z INFO repeated progress line 010\n2026-06-26T10:00:00.120Z INFO repeated progress line 011\n2026-06-26T10:00:00.121Z INFO repeated progress line 012\n2026-06-26T10:00:00.122Z INFO repeated progress line 013\n2026-06-26T10:00:00.123Z INFO repeated progress line 014\n2026-06-26T10:00:00.124Z INFO repeated progress line 015\n2026-06-26T10:00:00.125Z INFO repeated progress line 016\n2026-06-26T10:00:00.126Z INFO repeated progress line 017\n2026-06-26T10:00:00.127Z INFO repeated progress line 018\n2026-06-26T10:00:00.128Z INFO repeated progress line 019\n2026-06-26T10:00:00.129Z INFO repeated progress line 020\n2026-06-26T10:00:00.130Z INFO repeated progress line 021\n2026-06-26T10:00:00.131Z INFO repeated progress line 022\n2026-06-26T10:00:00.132Z INFO repeated progress line 023\n2026-06-26T10:00:00.133Z INFO repeated progress line 024\n2026-06-26T10:00:00.134Z INFO repeated progress line 025\n2026-06-26T10:00:00.135Z INFO repeated progress line 026\n2026-06-26T10:00:00.136Z INFO repeated progress line 027\n2026-06-26T10:00:00.137Z INFO repeated progress line 028\n2026-06-26T10:00:00.138Z INFO repeated progress line 029\n2026-06-26T10:00:00.139Z INFO repeated progress line 030\n2026-06-26T10:00:00.140Z INFO repeated progress line 031\n2026-06-26T10:00:00.141Z INFO repeated progress line 032\n2026-06-26T10:00:00.142Z INFO repeated progress line 033\n2026-06-26T10:00:00.143Z INFO repeated progress line 034\n2026-06-26T10:00:00.144Z INFO repeated progress line 035\n2026-06-26T10:00:00.145Z INFO repeated progress line 036\n2026-06-26T10:00:00.146Z INFO repeated progress line 037\n2026-06-26T10:00:00.147Z INFO repeated progress line 038\n2026-06-26T10:00:00.148Z INFO repeated progress line 039\n2026-06-26T10:00:00.149Z INFO repeated progress line 040\n2026-06-26T10:00:00.150Z INFO repeated progress line 041\n2026-06-26T10:00:00.151Z INFO repeated progress line 042\n2026-06-26T10:00:00.152Z INFO repeated progress line 043\n2026-06-26T10:00:00.153Z INFO repeated progress line 044\n2026-06-26T10:00:00.154Z INFO repeated progress line 045\n2026-06-26T10:00:00.155Z INFO repeated progress line 046\n2026-06-26T10:00:00.156Z INFO repeated progress line 047\n2026-06-26T10:00:00.157Z INFO repeated progress line 048\n2026-06-26T10:00:00.158Z INFO repeated progress line 049\n2026-06-26T10:00:00.159Z INFO repeated progress line 050\n2026-06-26T10:00:00.160Z INFO repeated progress line 051\n2026-06-26T10:00:00.161Z INFO repeated progress line 052\n2026-06-26T10:00:00.162Z INFO repeated progress line 053\n2026-06-26T10:00:00.163Z INFO repeated progress line 054\n2026-06-26T10:00:00.164Z INFO repeated progress line 055\n2026-06-26T10:00:00.165Z INFO repeated progress line 056\n2026-06-26T10:00:00.166Z INFO repeated progress line 057\n2026-06-26T10:00:00.167Z INFO repeated progress line 058\n2026-06-26T10:00:00.168Z INFO repeated progress line 059\n2026-06-26T10:00:00.169Z INFO repeated progress line 060\n2026-06-26T10:00:00.170Z INFO repeated progress line 061\n2026-06-26T10:00:00.171Z INFO repeated progress line 062\n2026-06-26T10:00:00.172Z INFO repeated progress line 063\n2026-06-26T10:00:00.173Z INFO repeated progress line 064\n2026-06-26T10:00:00.174Z INFO repeated progress line 065\n2026-06-26T10:00:00.175Z INFO repeated progress line 066\n2026-06-26T10:00:00.176Z INFO repeated progress line 067\n2026-06-26T10:00:00.177Z INFO repeated progress line 068\n2026-06-26T10:00:00.178Z INFO repeated progress line 069\n2026-06-26T10:00:00.179Z INFO repeated progress line 070\n2026-06-26T10:00:00.180Z INFO repeated progress line 071\n2026-06-26T10:00:00.181Z INFO repeated progress line 072\n2026-06-26T10:00:00.182Z INFO repeated progress line 073\n2026-06-26T10:00:00.183Z INFO repeated progress line 074\n2026-06-26T10:00:00.184Z INFO repeated progress line 075\n2026-06-26T10:00:00.185Z INFO repeated progress line 076\n2026-06-26T10:00:00.186Z INFO repeated progress line 077\n2026-06-26T10:00:00.187Z INFO repeated progress line 078\n2026-06-26T10:00:00.188Z INFO repeated progress line 079\n2026-06-26T10:00:00.189Z INFO repeated progress line 080\n2026-06-26T10:00:00.190Z INFO final exit code: 1\n"
+    }
+  ],
+  "tools": [
+    {
+      "type": "function",
+      "function": {
+        "name": "run_command",
+        "description": "Run a command and return stdout and stderr.",
+        "parameters": {
+          "type": "object",
+          "title": "RunCommandInput",
+          "properties": {
+            "command": { "type": "string", "title": "Command", "default": "", "examples": ["npm test"] },
+            "timeout_ms": { "type": "integer", "title": "Timeout", "default": 120000 }
+          },
+          "required": ["command"]
+        }
+      }
+    }
+  ]
+}

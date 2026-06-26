@@ -3,3 +3,11 @@ npm-debug.log*
 .env
 
 server.log
+captures/
+config.local.json
+
+reports/
+test-body.json
+captures/
+config.local.json
+server.log

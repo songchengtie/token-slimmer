@@ -1,316 +1,835 @@
 const express = require('express');
-const app = express();
+const fs = require('fs/promises');
+const fsSync = require('fs');
+const path = require('path');
+const { Readable } = require('stream');
+const {
+  buildXRay,
+  createState,
+  emptyTokenBreakdown,
+  estimateTokens,
+  makeReportHeaders,
+  modeConfigFromEnv,
+  processChatBody
+} = require('./lib/slimmer');
 
-const UPSTREAM_URL = process.env.UPSTREAM_URL || 'http://127.0.0.1:3000';
-const PORT = process.env.PORT || 3999;
-const SLIM_TOOLS = process.env.SLIM_TOOLS !== '0';
-const COMPRESS_CONTENT = process.env.COMPRESS_CONTENT !== '0';
-const STRIP_TOOLS = process.env.STRIP_TOOLS !== '0';
-const HEARTBEAT_INTERVAL = parseInt(process.env.HEARTBEAT_INTERVAL || '3', 10);
+const HOP_BY_HOP_HEADERS = new Set([
+  'connection',
+  'keep-alive',
+  'proxy-authenticate',
+  'proxy-authorization',
+  'te',
+  'trailer',
+  'transfer-encoding',
+  'upgrade',
+  'host',
+  'content-length'
+]);
 
-app.use(express.json({ limit: '100mb' }));
+const RESPONSE_SKIP_HEADERS = new Set([
+  ...HOP_BY_HOP_HEADERS,
+  'content-encoding',
+  'content-length'
+]);
 
-// ====== TOOLS CACHE ======
-let cachedTools = null;
-let cachedToolsTokens = 0;
-let requestCount = 0;
+const SENSITIVE_KEYS = new Set([
+  'authorization',
+  'api_key',
+  'token',
+  'password',
+  'cookie',
+  'x-api-key',
+  'upstream_api_key'
+]);
 
-// ====== TOKEN ESTIMATION ======
-function estimateTokens(text) {
-  if (!text) return 0;
-  const s = String(text);
-  const cjk = (s.match(/[\u4e00-\u9fff]/g) || []).length;
-  return Math.ceil(cjk * 1.0 + (s.length - cjk) / 4);
+const DEFAULT_SETTINGS = {
+  HOST: '127.0.0.1',
+  PORT: 3999,
+  UPSTREAM_URL: 'http://127.0.0.1:3000',
+  MODE: 'safe',
+  AUTH_MODE: 'forward_client_authorization',
+  UPSTREAM_API_KEY: '',
+  CAPTURE_REQUESTS: false,
+  CAPTURE_DIR: 'captures',
+  CACHE_AWARE: false,
+  STRIP_TOOLS: false,
+  HEARTBEAT_INTERVAL: 3,
+  SLIM_TOOLS: true,
+  COMPRESS_CONTENT: true
+};
+
+const EDITABLE_FIELDS = new Set([
+  'UPSTREAM_URL',
+  'MODE',
+  'AUTH_MODE',
+  'UPSTREAM_API_KEY',
+  'CAPTURE_REQUESTS',
+  'CACHE_AWARE',
+  'STRIP_TOOLS',
+  'HEARTBEAT_INTERVAL'
+]);
+
+const ENV_LOCK_FIELDS = new Set([
+  ...EDITABLE_FIELDS,
+  'HOST',
+  'PORT',
+  'CAPTURE_DIR',
+  'SLIM_TOOLS',
+  'COMPRESS_CONTENT'
+]);
+
+function normalizeBaseUrl(url) {
+  return String(url || '').replace(/\/+$/, '');
 }
 
-// ====== TOOLS SCHEMA SLIMMING ======
-function shortText(s, max) {
-  if (typeof s !== 'string') return s;
-  return s.length > max ? s.slice(0, max) + '...' : s;
+function targetUrl(upstreamUrl, originalUrl) {
+  return normalizeBaseUrl(upstreamUrl) + originalUrl;
 }
 
-function slimSchema(obj, depth) {
-  if (obj == null || typeof obj !== 'object') return obj;
-  if (Array.isArray(obj)) return obj.map(x => slimSchema(x, depth + 1));
+function envFlag(env, name, fallback) {
+  if (env[name] == null || env[name] === '') return fallback;
+  return !['0', 'false', 'no', 'off'].includes(String(env[name]).toLowerCase());
+}
+
+function parseBool(value, fallback) {
+  if (value == null || value === '') return fallback;
+  if (typeof value === 'boolean') return value;
+  return !['0', 'false', 'no', 'off'].includes(String(value).toLowerCase());
+}
+
+function parsePositiveInt(value, fallback) {
+  const n = Number.parseInt(value, 10);
+  return Number.isFinite(n) && n > 0 ? n : fallback;
+}
+
+function normalizeMode(value) {
+  const mode = String(value || 'safe').toLowerCase();
+  return ['safe', 'balanced', 'aggressive'].includes(mode) ? mode : 'safe';
+}
+
+function normalizeAuthMode(value) {
+  const mode = String(value || 'forward_client_authorization').toLowerCase();
+  return mode === 'configured_upstream_key' ? mode : 'forward_client_authorization';
+}
+
+function normalizeSettings(input) {
+  const settings = { ...DEFAULT_SETTINGS, ...(input || {}) };
+  settings.PORT = parsePositiveInt(settings.PORT, DEFAULT_SETTINGS.PORT);
+  settings.MODE = normalizeMode(settings.MODE);
+  settings.AUTH_MODE = normalizeAuthMode(settings.AUTH_MODE);
+  settings.CAPTURE_REQUESTS = parseBool(settings.CAPTURE_REQUESTS, DEFAULT_SETTINGS.CAPTURE_REQUESTS);
+  settings.CACHE_AWARE = parseBool(settings.CACHE_AWARE, DEFAULT_SETTINGS.CACHE_AWARE);
+  settings.STRIP_TOOLS = parseBool(settings.STRIP_TOOLS, DEFAULT_SETTINGS.STRIP_TOOLS);
+  if (settings.CACHE_AWARE) settings.STRIP_TOOLS = false;
+  settings.HEARTBEAT_INTERVAL = parsePositiveInt(settings.HEARTBEAT_INTERVAL, DEFAULT_SETTINGS.HEARTBEAT_INTERVAL);
+  settings.SLIM_TOOLS = parseBool(settings.SLIM_TOOLS, DEFAULT_SETTINGS.SLIM_TOOLS);
+  settings.COMPRESS_CONTENT = parseBool(settings.COMPRESS_CONTENT, DEFAULT_SETTINGS.COMPRESS_CONTENT);
+  settings.UPSTREAM_URL = normalizeBaseUrl(settings.UPSTREAM_URL || DEFAULT_SETTINGS.UPSTREAM_URL);
+  settings.HOST = String(settings.HOST || DEFAULT_SETTINGS.HOST);
+  settings.CAPTURE_DIR = String(settings.CAPTURE_DIR || DEFAULT_SETTINGS.CAPTURE_DIR);
+  settings.UPSTREAM_API_KEY = String(settings.UPSTREAM_API_KEY || '');
+  return settings;
+}
+
+function hasEnvOverride(env, field) {
+  return Object.prototype.hasOwnProperty.call(env, field);
+}
+
+function envOverrides(env) {
   const out = {};
-  for (const [key, value] of Object.entries(obj)) {
-    if (['examples', 'example', 'default', 'title', '$schema', 'markdownDescription', 'deprecated'].includes(key)) continue;
-    if (key === 'description') { out[key] = shortText(value, depth <= 2 ? 120 : 50); continue; }
-    out[key] = slimSchema(value, depth + 1);
+  for (const field of ENV_LOCK_FIELDS) {
+    if (hasEnvOverride(env, field)) out[field] = env[field];
   }
   return out;
 }
 
-function slimTools(tools) {
-  if (!Array.isArray(tools)) return tools;
-  return tools.map(tool => {
-    const newTool = JSON.parse(JSON.stringify(tool));
-    const fn = newTool.function || newTool;
-    if (fn.description) fn.description = shortText(fn.description, 120);
-    if (fn.parameters) fn.parameters = slimSchema(fn.parameters);
-    return newTool;
-  });
-}
-
-// ====== CONTENT COMPRESSION ======
-function minifyJson(text) {
-  try { const p = JSON.parse(text); const m = JSON.stringify(p); return m.length < text.length ? m : text; } catch { return text; }
-}
-
-function compressCode(text) {
-  let lines = text.split('\n');
-  lines = lines.map(l => l.replace(/\x1b\[[0-9;]*m/g, ''));
-  while (lines.length && lines[0].trim() === '') lines.shift();
-  while (lines.length && lines[lines.length-1].trim() === '') lines.pop();
-  const merged = [];
-  let blankRun = 0;
-  for (const line of lines) {
-    if (line.trim() === '') { blankRun++; if (blankRun > 1) continue; }
-    else blankRun = 0;
-    merged.push(line);
+function lockMap(env) {
+  const locks = {};
+  for (const field of ENV_LOCK_FIELDS) {
+    locks[field] = hasEnvOverride(env, field);
   }
-  const clean = merged.filter(l => !/^[-=*#]{3,}$/.test(l.trim()));
-  const deduped = [];
-  for (const line of clean) {
-    if (deduped.length > 0 && line === deduped[deduped.length - 1]) continue;
-    deduped.push(line);
-  }
-  const truncated = deduped.map(l => l.length > 500 ? l.slice(0, 500) + '...[truncated]' : l);
-  const meaningful = truncated.filter(l => {
-    const t = l.trim();
-    if (!t || /^[-=*#]{3,}$/.test(t) || /^[\d\s:|/-]+$/.test(t)) return false;
-    return true;
-  });
-  if (meaningful.length > 100) {
-    const head = meaningful.slice(0, 50);
-    const tail = meaningful.slice(-30);
-    return [...head, '... [' + (meaningful.length - 80) + ' lines omitted]', ...tail].join('\n');
-  }
-  return meaningful.join('\n');
+  return locks;
 }
 
-function compressLog(text) {
-  const lines = text.split('\n').filter(l => {
-    const t = l.trim();
-    if (!t) return false;
-    if (/^[-=*#]{3,}$/.test(t)) return false;
-    return true;
-  });
-  const keyLines = lines.filter(l => /(error|warn|fail|exception|traceback|timeout|denied|refused)/i.test(l));
-  if (keyLines.length > 0 && keyLines.length <= lines.length * 0.3) {
-    const head = lines.slice(0, 5);
-    const tail = lines.slice(-5);
-    return [...head, '... [' + (lines.length - 10) + ' lines filtered, ' + keyLines.length + ' key lines]', ...keyLines.slice(0, 20), ...tail].join('\n');
-  }
-  if (lines.length > 50) {
-    return [...lines.slice(0, 20), '... [' + (lines.length - 40) + ' lines]', ...lines.slice(-20)].join('\n');
-  }
-  return lines.join('\n');
-}
-
-function compressProse(text) {
-  let s = text.replace(/\x1b\[[0-9;]*m/g, '');
-  s = s.replace(/\s+/g, ' ').trim();
-  if (s.length > 2000) s = s.slice(0, 1500) + '... [' + (s.length - 1500) + ' more chars]';
-  return s;
-}
-
-function classifyContent(text) {
-  if (!text || text.length < 20) return 'skip';
-  const s = text.slice(0, 2000);
-  if (/^\[[\s\n]*\{/.test(s.trim())) return 'json';
-  if (/^\{[\s\n]*"/.test(s.trim())) return 'json';
-  if (/\n\s{2,}[\w.]/.test(s) && /[{}();]/.test(s) && !s.includes('\u3002')) return 'code';
-  if (/\d{4}[-\/]\d{2}[-\/]\d{2}/.test(s) && /(error|warn|info|debug|trace)/i.test(s)) return 'log';
-  if (/(Error|Traceback|at\s|File\s".*",\sline)/i.test(s)) return 'code';
-  if (/[\u4e00-\u9fff]/.test(s) || /[.!?] [A-Z]/.test(s)) return 'prose';
-  return 'code';
-}
-
-function compressContent(text) {
-  const type = classifyContent(text);
-  switch (type) {
-    case 'json': return minifyJson(text);
-    case 'code': return compressCode(text);
-    case 'log':  return compressLog(text);
-    case 'prose': return compressProse(text);
-    default: return text;
-  }
-}
-
-function compressInnerContent(text) {
+function readLocalConfig(configPath) {
   try {
-    const parsed = JSON.parse(text);
-    if (Array.isArray(parsed)) {
-      return JSON.stringify(parsed.map(item => {
-        if (item && typeof item === 'object' && item.output) {
-          const compressed = compressContent(String(item.output));
-          if (compressed !== String(item.output)) {
-            return { ...item, output: compressed };
-          }
-        }
-        return item;
-      }));
-    }
-    if (parsed && typeof parsed === 'object' && parsed.output) {
-      const compressed = compressContent(String(parsed.output));
-      if (compressed !== String(parsed.output)) {
-        return JSON.stringify({ ...parsed, output: compressed });
-      }
-    }
-    return minifyJson(text);
-  } catch {
-    return compressContent(text);
-  }
-}
-
-// ====== MESSAGE PROCESSING ======
-function processMessages(messages) {
-  let totalBefore = 0, totalAfter = 0;
-  let toolsSlimmed = false;
-
-  for (const msg of messages) {
-    if (!msg || typeof msg !== 'object') continue;
-
-    if (SLIM_TOOLS && msg.role === 'assistant' && msg.tool_calls) {
-      const before = estimateTokens(JSON.stringify(msg.tool_calls));
-      msg.tool_calls = slimTools(msg.tool_calls);
-      const after = estimateTokens(JSON.stringify(msg.tool_calls));
-      totalBefore += before; totalAfter += after;
-      if (before !== after) toolsSlimmed = true;
-    }
-
-    if (COMPRESS_CONTENT && msg.role === 'tool' && msg.content) {
-      const before = estimateTokens(msg.content);
-      const compressed = compressInnerContent(msg.content);
-      if (compressed !== msg.content) {
-        msg.content = compressed;
-        const after = estimateTokens(msg.content);
-        totalBefore += before; totalAfter += after;
-      }
-    }
-
-    if (COMPRESS_CONTENT && msg.role === 'function' && msg.content) {
-      const before = estimateTokens(msg.content);
-      const compressed = compressInnerContent(msg.content);
-      if (compressed !== msg.content) {
-        msg.content = compressed;
-        const after = estimateTokens(msg.content);
-        totalBefore += before; totalAfter += after;
-      }
-    }
-  }
-
-  return { totalBefore, totalAfter, toolsSlimmed };
-}
-
-// ====== TOOLS CACHE MANAGEMENT ======
-function updateToolsCache(tools) {
-  if (!tools || !Array.isArray(tools) || tools.length === 0) return;
-  const slimmed = slimTools(tools);
-  const tokens = estimateTokens(JSON.stringify(slimmed));
-  cachedTools = slimmed;
-  cachedToolsTokens = tokens;
-  console.log('[' + new Date().toLocaleTimeString() + '] tools cached: ' + tokens + ' tok (' + tools.length + ' tools)');
-}
-
-function shouldSendHeartbeat() {
-  requestCount++;
-  return (requestCount % HEARTBEAT_INTERVAL === 1);
-}
-
-// ====== PROXY HANDLER ======
-app.post('/v1/chat/completions', async (req, res) => {
-  const body = JSON.parse(JSON.stringify(req.body));
-  const messages = body.messages || [];
-
-  // 1. Cache tools if present
-  if (body.tools && Array.isArray(body.tools) && body.tools.length > 0) {
-    updateToolsCache(body.tools);
-  }
-
-  // 2. Compress messages
-  const { totalBefore, totalAfter, toolsSlimmed } = processMessages(messages);
-
-  // 3. Decide whether to strip tools
-  let toolsStripped = false;
-  let toolsRestoredTokens = 0;
-  const hadTools = !!body.tools;
-
-  if (STRIP_TOOLS && cachedTools && hadTools) {
-    const isHeartbeat = shouldSendHeartbeat();
-    if (isHeartbeat) {
-      body.tools = cachedTools;
-      toolsRestoredTokens = cachedToolsTokens;
-      console.log('[' + new Date().toLocaleTimeString() + '] heartbeat #' + requestCount + ': tools sent (' + cachedToolsTokens + ' tok)');
-    } else {
-      delete body.tools;
-      if (body.tool_choice) delete body.tool_choice;
-      toolsStripped = true;
-      toolsRestoredTokens = cachedToolsTokens;
-      console.log('[' + new Date().toLocaleTimeString() + '] req #' + requestCount + ': tools stripped (saved ~' + cachedToolsTokens + ' tok)');
-    }
-  } else if (hadTools && !STRIP_TOOLS) {
-    body.tools = slimTools(body.tools);
-  }
-
-  // 4. Forward to upstream
-  try {
-    const upstreamRes = await fetch(UPSTREAM_URL + '/v1/chat/completions', {
-      method: 'POST',
-      headers: {
-        'Content-Type': 'application/json',
-        'Authorization': req.headers.authorization || ''
-      },
-      body: JSON.stringify({ ...body, messages })
-    });
-
-    const data = await upstreamRes.json();
-
-    // 5. Adjust usage: add back cached tools tokens
-    if (data.usage && toolsRestoredTokens > 0) {
-      data.usage.prompt_tokens = (data.usage.prompt_tokens || 0) + toolsRestoredTokens;
-    }
-
-    // 6. Log savings
-    const saved = totalBefore - totalAfter;
-    const pct = totalBefore > 0 ? ((saved / totalBefore) * 100).toFixed(1) : '0.0';
-    const toolsSaved = toolsStripped ? cachedToolsTokens : 0;
-    const totalSaved = saved + toolsSaved;
-    const inputTokens = data.usage?.prompt_tokens || '?';
-
-    console.log(
-      '[' + new Date().toLocaleTimeString() + '] saved ' + totalSaved + ' tok' +
-      (saved > 0 ? ' (content:' + saved + ')' : '') +
-      (toolsStripped ? ' (strip:' + toolsSaved + ')' : '') +
-      ' | ' + messages.length + ' msgs | input=' + inputTokens
-    );
-
-    res.status(upstreamRes.status).json(data);
+    if (!fsSync.existsSync(configPath)) return {};
+    return JSON.parse(fsSync.readFileSync(configPath, 'utf8'));
   } catch (err) {
-    console.error('Proxy error:', err.message);
-    res.status(502).json({ error: { message: 'Upstream request failed: ' + err.message } });
+    console.warn('[token-slimmer] failed to read config.local.json:', err.message);
+    return {};
   }
-});
+}
 
-// Health check
-app.get('/health', (req, res) => {
-  res.json({
-    status: 'ok',
-    upstream: UPSTREAM_URL,
-    slim_tools: SLIM_TOOLS,
-    compress_content: COMPRESS_CONTENT,
-    strip_tools: STRIP_TOOLS,
-    heartbeat_interval: HEARTBEAT_INTERVAL,
-    request_count: requestCount,
-    tools_cached: !!cachedTools,
-    tools_cache_tokens: cachedToolsTokens
+async function writeLocalConfig(configPath, localConfig) {
+  await fs.mkdir(path.dirname(configPath), { recursive: true });
+  await fs.writeFile(configPath, `${JSON.stringify(localConfig, null, 2)}\n`);
+}
+
+function legacyOptionsToSettings(options) {
+  const out = {};
+  if (options.upstreamUrl != null) out.UPSTREAM_URL = options.upstreamUrl;
+  if (options.port != null) out.PORT = options.port;
+  if (options.host != null) out.HOST = options.host;
+  if (options.captureRequests != null) out.CAPTURE_REQUESTS = options.captureRequests;
+  if (options.captureDir != null) out.CAPTURE_DIR = options.captureDir;
+  if (options.upstreamApiKey != null) out.UPSTREAM_API_KEY = options.upstreamApiKey;
+  if (options.authMode != null) out.AUTH_MODE = options.authMode;
+  if (options.modeConfig) {
+    out.MODE = options.modeConfig.mode;
+    out.STRIP_TOOLS = options.modeConfig.stripTools;
+    out.HEARTBEAT_INTERVAL = options.modeConfig.heartbeatInterval;
+    out.SLIM_TOOLS = options.modeConfig.slimTools;
+    out.COMPRESS_CONTENT = options.modeConfig.compressContent;
+    out.CACHE_AWARE = options.modeConfig.cacheAware;
+  }
+  return out;
+}
+
+function settingsToModeEnv(settings) {
+  return {
+    MODE: settings.MODE,
+    CACHE_AWARE: settings.CACHE_AWARE ? '1' : '0',
+    SLIM_TOOLS: settings.SLIM_TOOLS ? '1' : '0',
+    COMPRESS_CONTENT: settings.COMPRESS_CONTENT ? '1' : '0',
+    STRIP_TOOLS: settings.STRIP_TOOLS ? '1' : '0',
+    HEARTBEAT_INTERVAL: String(settings.HEARTBEAT_INTERVAL)
+  };
+}
+
+function createRuntimeConfig(options = {}) {
+  const env = options.env || process.env;
+  const configPath = options.configPath || path.join(__dirname, 'config.local.json');
+  const rawLocalConfig = {
+    ...readLocalConfig(configPath),
+    ...(options.localConfig || {})
+  };
+  const localConfig = normalizeSettings({
+    ...DEFAULT_SETTINGS,
+    ...rawLocalConfig
   });
-});
+  const settings = normalizeSettings({
+    ...DEFAULT_SETTINGS,
+    ...localConfig,
+    ...legacyOptionsToSettings(options),
+    ...envOverrides(env)
+  });
+  const explicitAuthMode = hasEnvOverride(env, 'AUTH_MODE') ||
+    Object.prototype.hasOwnProperty.call(rawLocalConfig, 'AUTH_MODE') ||
+    options.authMode != null;
 
-app.listen(PORT, () => {
-  console.log('Token Slimmer proxy running on http://localhost:' + PORT);
-  console.log('Upstream: ' + UPSTREAM_URL);
-  console.log('SLIM_TOOLS=' + SLIM_TOOLS + ', COMPRESS_CONTENT=' + COMPRESS_CONTENT);
-  console.log('STRIP_TOOLS=' + STRIP_TOOLS + ', HEARTBEAT_INTERVAL=' + HEARTBEAT_INTERVAL);
-});
+  if (!settings.UPSTREAM_API_KEY && !explicitAuthMode) {
+    settings.AUTH_MODE = 'forward_client_authorization';
+  }
+  if (settings.UPSTREAM_API_KEY && !explicitAuthMode) {
+    settings.AUTH_MODE = 'configured_upstream_key';
+  }
+  const explicitSlimTools = hasEnvOverride(env, 'SLIM_TOOLS') ||
+    Object.prototype.hasOwnProperty.call(rawLocalConfig, 'SLIM_TOOLS') ||
+    options.modeConfig?.slimTools != null;
+  if (settings.CACHE_AWARE && !explicitSlimTools) {
+    settings.SLIM_TOOLS = false;
+  }
+  if (settings.CACHE_AWARE) {
+    settings.STRIP_TOOLS = false;
+  }
+
+  return {
+    configPath,
+    env,
+    envLocks: lockMap(env),
+    localConfig,
+    settings,
+    modeConfig: modeConfigFromEnv(settingsToModeEnv(settings)),
+    state: options.state || createState(),
+    stats: options.stats || createStats()
+  };
+}
+
+function refreshModeConfig(config) {
+  config.modeConfig = modeConfigFromEnv(settingsToModeEnv(config.settings));
+}
+
+function effectiveUpstreamApiKey(config) {
+  return config.settings.AUTH_MODE === 'configured_upstream_key'
+    ? config.settings.UPSTREAM_API_KEY
+    : '';
+}
+
+function buildForwardHeaders(req, upstreamApiKey) {
+  const headers = {};
+  for (const [key, value] of Object.entries(req.headers)) {
+    const lower = key.toLowerCase();
+    if (HOP_BY_HOP_HEADERS.has(lower)) continue;
+    if (lower === 'accept-encoding') continue;
+    if (value == null) continue;
+    headers[key] = Array.isArray(value) ? value.join(', ') : value;
+  }
+  headers['accept-encoding'] = 'identity';
+  if (!headers['content-type'] && !headers['Content-Type'] && req.body !== undefined) {
+    headers['content-type'] = 'application/json';
+  }
+  if (upstreamApiKey) {
+    for (const key of Object.keys(headers)) {
+      const lower = key.toLowerCase();
+      if (lower === 'authorization' || lower === 'x-api-key') {
+        delete headers[key];
+      }
+    }
+    headers.authorization = `Bearer ${upstreamApiKey}`;
+  }
+  return headers;
+}
+
+function copyResponseHeaders(upstreamRes, res) {
+  upstreamRes.headers.forEach((value, key) => {
+    if (!RESPONSE_SKIP_HEADERS.has(key.toLowerCase())) {
+      res.setHeader(key, value);
+    }
+  });
+}
+
+function setReportHeaders(res, report) {
+  for (const [key, value] of Object.entries(makeReportHeaders(report))) {
+    res.setHeader(key, value);
+  }
+}
+
+async function sendUpstreamResponse(upstreamRes, res, report, stream, onStreamDone) {
+  copyResponseHeaders(upstreamRes, res);
+  if (report) setReportHeaders(res, report);
+  res.status(upstreamRes.status);
+
+  if (stream && upstreamRes.body) {
+    await new Promise((resolve, reject) => {
+      const nodeStream = Readable.fromWeb(upstreamRes.body);
+      let settled = false;
+      const finish = error => {
+        if (settled) return;
+        settled = true;
+        if (onStreamDone) onStreamDone(error || null);
+        if (error) reject(error);
+        else resolve();
+      };
+      nodeStream.on('error', finish);
+      res.on('error', finish);
+      res.on('finish', () => finish(null));
+      res.on('close', () => finish(null));
+      nodeStream.pipe(res);
+    });
+    return;
+  }
+
+  const text = await upstreamRes.text();
+  res.send(text);
+}
+
+function logReport(report, req) {
+  const saved = report.savedTokens;
+  const pct = report.beforeTokens > 0 ? ((saved / report.beforeTokens) * 100).toFixed(1) : '0.0';
+  const parts = [
+    `mode=${report.mode}`,
+    `${req.method} ${req.originalUrl}`,
+    `before=${report.beforeTokens}`,
+    `after=${report.afterTokens}`,
+    `saved=${saved} (${pct}%)`,
+    `schema=${report.breakdown.toolSchemaSlimming}`,
+    `output=${report.breakdown.toolOutputCompression}`,
+    `strip=${report.breakdown.toolsStripping}`
+  ];
+  if (report.toolsStripped) parts.push('tools=stripped');
+  if (report.stream) parts.push('stream=true');
+  console.log(`[token-slimmer] ${parts.join(' | ')}`);
+}
+
+function createStats() {
+  return {
+    recentRequests: [],
+    totalRequests: 0,
+    totalBeforeTokens: 0,
+    totalAfterTokens: 0,
+    totalSavedTokens: 0
+  };
+}
+
+function savedPercent(saved, before) {
+  return before > 0 ? Number(((saved / before) * 100).toFixed(1)) : 0;
+}
+
+function logRequestRecorded(record) {
+  console.log(
+    '[token-slimmer] request recorded' +
+    ` | method=${record.method}` +
+    ` | path=${record.path}` +
+    ` | mode=${record.mode || 'unknown'}` +
+    ` | stream=${record.stream}` +
+    ` | before=${record.originalTokens}` +
+    ` | after=${record.compressedTokens}` +
+    ` | saved=${record.savedTokens}`
+  );
+}
+
+function createRequestStatsRecord(stats, req, report) {
+  const before = report?.beforeTokens || 0;
+  const after = report?.afterTokens || 0;
+  const saved = report?.savedTokens || 0;
+  const record = {
+    timestamp: new Date().toISOString(),
+    method: req.method,
+    path: req.originalUrl,
+    mode: report?.mode || null,
+    stream: report?.stream === true,
+    originalTokens: before,
+    compressedTokens: after,
+    savedTokens: saved,
+    savedPercent: savedPercent(saved, before),
+    breakdown: {
+      schemaSlimming: report?.breakdown?.toolSchemaSlimming || 0,
+      contentCompression: report?.breakdown?.toolOutputCompression || 0,
+      toolsStripping: report?.breakdown?.toolsStripping || 0
+    },
+    tokenBreakdownBefore: report?.xray?.tokenBreakdownBefore || emptyTokenBreakdown(),
+    tokenBreakdownAfter: report?.xray?.tokenBreakdownAfter || emptyTokenBreakdown(),
+    tokenBreakdownSaved: report?.xray?.tokenBreakdownSaved || emptyTokenBreakdown(),
+    topTokenWasters: report?.xray?.topTokenWasters || [],
+    toolsStripped: report?.toolsStripped === true,
+    statusCode: null,
+    error: null
+  };
+
+  stats.totalRequests += 1;
+  stats.totalBeforeTokens += before;
+  stats.totalAfterTokens += after;
+  stats.totalSavedTokens += saved;
+  stats.recentRequests.unshift(record);
+  if (stats.recentRequests.length > 100) stats.recentRequests.length = 100;
+  logRequestRecorded(record);
+  return record;
+}
+
+function updateRequestStatsRecord(record, statusCode, error) {
+  if (!record) return;
+  if (statusCode != null) record.statusCode = statusCode;
+  record.error = error || null;
+}
+
+function recordRequestStats(stats, req, report, statusCode, error) {
+  const record = createRequestStatsRecord(stats, req, report);
+  updateRequestStatsRecord(record, statusCode, error);
+  return record;
+}
+
+function addBreakdown(target, source) {
+  for (const [category, value] of Object.entries(source || {})) {
+    target[category] = (target[category] || 0) + (value || 0);
+  }
+}
+
+function largestBreakdownCategory(breakdown) {
+  return Object.entries(breakdown || {})
+    .sort((a, b) => b[1] - a[1])
+    .map(([category, tokens]) => ({ category, tokens }))[0] || { category: null, tokens: 0 };
+}
+
+function aggregateXRay(records) {
+  const before = emptyTokenBreakdown();
+  const after = emptyTokenBreakdown();
+  const saved = emptyTokenBreakdown();
+  const wasters = [];
+  for (const record of records) {
+    addBreakdown(before, record.tokenBreakdownBefore);
+    addBreakdown(after, record.tokenBreakdownAfter);
+    addBreakdown(saved, record.tokenBreakdownSaved);
+    for (const item of record.topTokenWasters || []) {
+      wasters.push({
+        ...item,
+        requestPath: record.path,
+        timestamp: record.timestamp
+      });
+    }
+  }
+  wasters.sort((a, b) => b.estimatedTokens - a.estimatedTokens);
+  const largestToolOutput = wasters.find(item => item.category === 'toolMessages' || item.category === 'functionMessages') || null;
+  const largestToolsSchema = wasters.find(item => item.category === 'toolsSchema') || null;
+  return {
+    tokenBreakdownBefore: before,
+    tokenBreakdownAfter: after,
+    tokenBreakdownSaved: saved,
+    biggestTokenCategory: largestBreakdownCategory(before),
+    biggestSavedCategory: largestBreakdownCategory(saved),
+    largestSingleToolOutput: largestToolOutput,
+    largestToolsSchema,
+    topTokenWasters: wasters.slice(0, 12)
+  };
+}
+
+function statsPayload(stats) {
+  return {
+    recentRequests: stats.recentRequests,
+    totalRequests: stats.totalRequests,
+    totalEstimatedTokensBefore: stats.totalBeforeTokens,
+    totalEstimatedTokensAfter: stats.totalAfterTokens,
+    totalEstimatedSavedTokens: stats.totalSavedTokens,
+    overallSavedPercent: savedPercent(stats.totalSavedTokens, stats.totalBeforeTokens),
+    xray: aggregateXRay(stats.recentRequests)
+  };
+}
+
+function apiKeyStatus(upstreamApiKey) {
+  if (!upstreamApiKey) return { status: 'not_stored' };
+  return {
+    status: 'configured',
+    last4: String(upstreamApiKey).slice(-4)
+  };
+}
+
+function fieldPayload(field, value, config, extra = {}) {
+  return {
+    value,
+    lockedByEnv: config.envLocks[field] === true,
+    ...extra
+  };
+}
+
+function configPayload(config) {
+  const settings = config.settings;
+  return {
+    listenPort: settings.PORT,
+    host: settings.HOST,
+    upstreamUrl: settings.UPSTREAM_URL,
+    mode: settings.MODE,
+    captureEnabled: settings.CAPTURE_REQUESTS,
+    captureDir: settings.CAPTURE_DIR,
+    cacheAware: settings.CACHE_AWARE,
+    stripToolsEnabled: settings.STRIP_TOOLS,
+    heartbeatInterval: settings.HEARTBEAT_INTERVAL,
+    authMode: settings.AUTH_MODE,
+    apiKey: apiKeyStatus(settings.UPSTREAM_API_KEY),
+    envLocks: config.envLocks,
+    configPath: config.configPath,
+    fields: {
+      HOST: fieldPayload('HOST', settings.HOST, config, { editable: false, restartRequired: true }),
+      PORT: fieldPayload('PORT', settings.PORT, config, { editable: false, restartRequired: true }),
+      UPSTREAM_URL: fieldPayload('UPSTREAM_URL', settings.UPSTREAM_URL, config, { editable: true }),
+      MODE: fieldPayload('MODE', settings.MODE, config, { editable: true }),
+      AUTH_MODE: fieldPayload('AUTH_MODE', settings.AUTH_MODE, config, { editable: true }),
+      UPSTREAM_API_KEY: {
+        ...apiKeyStatus(settings.UPSTREAM_API_KEY),
+        lockedByEnv: config.envLocks.UPSTREAM_API_KEY === true,
+        editable: true,
+        writeOnly: true
+      },
+      CAPTURE_REQUESTS: fieldPayload('CAPTURE_REQUESTS', settings.CAPTURE_REQUESTS, config, { editable: true }),
+      CACHE_AWARE: fieldPayload('CACHE_AWARE', settings.CACHE_AWARE, config, { editable: true }),
+      STRIP_TOOLS: fieldPayload('STRIP_TOOLS', settings.STRIP_TOOLS, config, { editable: true }),
+      HEARTBEAT_INTERVAL: fieldPayload('HEARTBEAT_INTERVAL', settings.HEARTBEAT_INTERVAL, config, { editable: true })
+    }
+  };
+}
+
+function redactSensitive(value) {
+  if (typeof value === 'string') {
+    return value
+      .replace(/Bearer\s+[A-Za-z0-9._~+/=-]+/gi, 'Bearer [REDACTED]')
+      .replace(/\bsk-[A-Za-z0-9_-]{8,}\b/g, 'sk-[REDACTED]')
+      .replace(/\b(?:authorization|api_key|token|password|cookie|x-api-key)\s*[:=]\s*[^\s,;]+/gi, match => {
+        const key = match.split(/[:=]/)[0];
+        return `${key}=[REDACTED]`;
+      });
+  }
+  if (Array.isArray(value)) return value.map(redactSensitive);
+  if (!value || typeof value !== 'object') return value;
+
+  const out = {};
+  for (const [key, child] of Object.entries(value)) {
+    if (SENSITIVE_KEYS.has(key.toLowerCase())) {
+      out[key] = '[REDACTED]';
+    } else {
+      out[key] = redactSensitive(child);
+    }
+  }
+  return out;
+}
+
+function safeCapturePath(captureDir, req) {
+  const stamp = new Date().toISOString().replace(/[:.]/g, '-');
+  const route = req.originalUrl.split('?')[0].replace(/[^a-z0-9]+/gi, '-').replace(/^-|-$/g, '');
+  const suffix = Math.random().toString(36).slice(2, 8);
+  return path.join(captureDir, `${stamp}-${req.method}-${route || 'v1'}-${suffix}.json`);
+}
+
+async function captureRequest(req, body, captureDir) {
+  if (!body || typeof body !== 'object') return;
+  await fs.mkdir(captureDir, { recursive: true });
+  const capture = {
+    captured_at: new Date().toISOString(),
+    method: req.method,
+    path: req.originalUrl,
+    headers: redactSensitive(req.headers),
+    body: redactSensitive(body)
+  };
+  await fs.writeFile(safeCapturePath(captureDir, req), `${JSON.stringify(capture, null, 2)}\n`);
+}
+
+function settingsPatchFromBody(body) {
+  const input = body || {};
+  const patch = {};
+  if (input.UPSTREAM_URL != null || input.upstreamUrl != null) {
+    patch.UPSTREAM_URL = input.UPSTREAM_URL ?? input.upstreamUrl;
+  }
+  if (input.MODE != null || input.mode != null) patch.MODE = input.MODE ?? input.mode;
+  if (input.AUTH_MODE != null || input.authMode != null) patch.AUTH_MODE = input.AUTH_MODE ?? input.authMode;
+  if (input.CAPTURE_REQUESTS != null || input.captureEnabled != null) {
+    patch.CAPTURE_REQUESTS = input.CAPTURE_REQUESTS ?? input.captureEnabled;
+  }
+  if (input.CACHE_AWARE != null || input.cacheAware != null) {
+    patch.CACHE_AWARE = input.CACHE_AWARE ?? input.cacheAware;
+  }
+  if (input.STRIP_TOOLS != null || input.stripToolsEnabled != null) {
+    patch.STRIP_TOOLS = input.STRIP_TOOLS ?? input.stripToolsEnabled;
+  }
+  if (input.HEARTBEAT_INTERVAL != null || input.heartbeatInterval != null) {
+    patch.HEARTBEAT_INTERVAL = input.HEARTBEAT_INTERVAL ?? input.heartbeatInterval;
+  }
+  if (input.UPSTREAM_API_KEY != null || input.upstreamApiKey != null) {
+    const key = input.UPSTREAM_API_KEY ?? input.upstreamApiKey;
+    if (String(key) !== '') patch.UPSTREAM_API_KEY = key;
+  }
+  if (input.clearUpstreamApiKey === true) patch.UPSTREAM_API_KEY = '';
+  return patch;
+}
+
+function normalizeEditablePatch(patch, currentSettings) {
+  const next = {};
+  for (const [field, value] of Object.entries(patch)) {
+    if (!EDITABLE_FIELDS.has(field)) continue;
+    next[field] = value;
+  }
+  const merged = normalizeSettings({ ...currentSettings, ...next });
+  const normalized = {};
+  for (const field of Object.keys(next)) normalized[field] = merged[field];
+  return normalized;
+}
+
+async function updateConfigFromBody(config, body) {
+  const patch = normalizeEditablePatch(settingsPatchFromBody(body), config.settings);
+  const locked = Object.keys(patch).filter(field => config.envLocks[field]);
+  if (locked.length > 0) {
+    return {
+      ok: false,
+      status: 409,
+      body: {
+        error: 'Some fields are locked by environment variables.',
+        lockedFields: locked
+      }
+    };
+  }
+
+  config.localConfig = normalizeSettings({ ...config.localConfig, ...patch });
+  config.settings = normalizeSettings({ ...config.settings, ...patch });
+  refreshModeConfig(config);
+
+  const persisted = {};
+  for (const field of Object.keys(DEFAULT_SETTINGS)) {
+    if (config.localConfig[field] !== DEFAULT_SETTINGS[field]) {
+      persisted[field] = config.localConfig[field];
+    }
+  }
+  await writeLocalConfig(config.configPath, persisted);
+
+  return {
+    ok: true,
+    status: 200,
+    body: configPayload(config)
+  };
+}
+
+function sanitizeError(message, config) {
+  let text = String(message || 'Upstream test failed.');
+  const key = config.settings.UPSTREAM_API_KEY;
+  if (key) text = text.split(key).join('[REDACTED]');
+  text = text.replace(/Bearer\s+[A-Za-z0-9._~+/=-]+/g, 'Bearer [REDACTED]');
+  return text;
+}
+
+async function testUpstream(config) {
+  const url = `${normalizeBaseUrl(config.settings.UPSTREAM_URL)}/v1/models`;
+  try {
+    const upstreamRes = await fetch(url, {
+      method: 'GET',
+      headers: buildForwardHeaders({ headers: {}, body: undefined }, effectiveUpstreamApiKey(config))
+    });
+    return {
+      ok: upstreamRes.ok,
+      status: upstreamRes.status,
+      error: upstreamRes.ok ? null : `Upstream returned HTTP ${upstreamRes.status}`
+    };
+  } catch (err) {
+    return {
+      ok: false,
+      status: null,
+      error: sanitizeError(err.message, config)
+    };
+  }
+}
+
+function basicReport(body, modeConfig) {
+  const estimate = body && typeof body === 'object'
+    ? estimateTokens(JSON.stringify(body))
+    : 0;
+  return {
+    mode: modeConfig.mode,
+    beforeTokens: estimate,
+    afterTokens: estimate,
+    savedTokens: 0,
+    breakdown: {
+      toolSchemaSlimming: 0,
+      toolOutputCompression: 0,
+      toolsStripping: 0
+    },
+    toolsStripped: false,
+    stream: body && typeof body === 'object' && body.stream === true
+  };
+}
+
+function createApp(options = {}) {
+  const app = express();
+  const config = createRuntimeConfig(options);
+
+  app.use(express.json({ limit: options.jsonLimit || '100mb' }));
+
+  app.get('/dashboard', (req, res) => {
+    res.sendFile(path.join(__dirname, 'public', 'dashboard.html'));
+  });
+
+  app.get('/api/config', (req, res) => {
+    res.json(configPayload(config));
+  });
+
+  app.post('/api/config', async (req, res) => {
+    try {
+      const result = await updateConfigFromBody(config, req.body);
+      res.status(result.status).json(result.body);
+    } catch (err) {
+      res.status(400).json({ error: sanitizeError(err.message, config) });
+    }
+  });
+
+  app.post('/api/config/test-upstream', async (req, res) => {
+    const result = await testUpstream(config);
+    res.status(result.ok ? 200 : 502).json(result);
+  });
+
+  app.get('/api/stats', (req, res) => {
+    res.json(statsPayload(config.stats));
+  });
+
+  app.get('/health', (req, res) => {
+    res.json({
+      status: 'ok',
+      upstream: config.settings.UPSTREAM_URL,
+      mode: config.modeConfig.mode,
+      cache_aware: config.modeConfig.cacheAware,
+      slim_tools: config.modeConfig.slimTools,
+      compress_content: config.modeConfig.compressContent,
+      strip_tools: config.modeConfig.stripTools,
+      heartbeat_interval: config.modeConfig.heartbeatInterval,
+      request_count: config.state.requestCount,
+      tools_cached: !!config.state.cachedTools,
+      tools_cache_tokens: config.state.cachedToolsTokens,
+      capture_requests: config.settings.CAPTURE_REQUESTS,
+      capture_dir: config.settings.CAPTURE_DIR,
+      auth_mode: config.settings.AUTH_MODE
+    });
+  });
+
+  app.all('/v1/*', async (req, res) => {
+    const isChatCompletion = req.method === 'POST' && req.path === '/v1/chat/completions';
+    let body = req.body;
+    let report = null;
+    let statsRecord = null;
+
+    if (config.settings.CAPTURE_REQUESTS && body && typeof body === 'object') {
+      try {
+        await captureRequest(req, body, config.settings.CAPTURE_DIR);
+      } catch (err) {
+        console.warn('[token-slimmer] request capture failed:', sanitizeError(err.message, config));
+      }
+    }
+
+    if (isChatCompletion && body && typeof body === 'object') {
+      const processed = processChatBody(body, config.modeConfig, config.state);
+      body = processed.body;
+      report = processed.report;
+      report.stream = body.stream === true;
+    } else {
+      report = basicReport(body, config.modeConfig);
+    }
+    report.xray = buildXRay(req.body, body);
+    statsRecord = createRequestStatsRecord(config.stats, req, report);
+
+    try {
+      const method = req.method.toUpperCase();
+      const hasBody = method !== 'GET' && method !== 'HEAD' && body !== undefined;
+      const upstreamRes = await fetch(targetUrl(config.settings.UPSTREAM_URL, req.originalUrl), {
+        method,
+        headers: buildForwardHeaders(req, effectiveUpstreamApiKey(config)),
+        body: hasBody ? JSON.stringify(body) : undefined
+      });
+
+      if (report) logReport(report, req);
+      updateRequestStatsRecord(statsRecord, upstreamRes.status, null);
+      await sendUpstreamResponse(upstreamRes, res, report, !!report?.stream, error => {
+        updateRequestStatsRecord(statsRecord, upstreamRes.status, error ? sanitizeError(error.message, config) : null);
+      });
+    } catch (err) {
+      const safeMessage = sanitizeError(err.message, config);
+      console.error('[token-slimmer] proxy error:', safeMessage);
+      updateRequestStatsRecord(statsRecord, 502, safeMessage);
+      if (res.headersSent) {
+        res.end();
+        return;
+      }
+      res.status(502).json({
+        error: {
+          message: `Upstream request failed: ${safeMessage}`,
+          type: 'token_slimmer_upstream_error'
+        }
+      });
+    }
+  });
+
+  return app;
+}
+
+if (require.main === module) {
+  const bootConfig = createRuntimeConfig();
+  const app = createApp();
+  app.listen(bootConfig.settings.PORT, bootConfig.settings.HOST, () => {
+    console.log(`Token Slimmer proxy running on http://${bootConfig.settings.HOST}:${bootConfig.settings.PORT}`);
+    console.log(`Upstream: ${bootConfig.settings.UPSTREAM_URL}`);
+    console.log(`MODE=${bootConfig.modeConfig.mode}, SLIM_TOOLS=${bootConfig.modeConfig.slimTools}, COMPRESS_CONTENT=${bootConfig.modeConfig.compressContent}`);
+    console.log(`CACHE_AWARE=${bootConfig.modeConfig.cacheAware}, STRIP_TOOLS=${bootConfig.modeConfig.stripTools}, HEARTBEAT_INTERVAL=${bootConfig.modeConfig.heartbeatInterval}`);
+    console.log(bootConfig.settings.AUTH_MODE === 'configured_upstream_key' ? 'Auth: using configured upstream key' : 'Auth: forwarding client Authorization header');
+    if (bootConfig.settings.CAPTURE_REQUESTS) {
+      console.log(`CAPTURE_REQUESTS=1, CAPTURE_DIR=${bootConfig.settings.CAPTURE_DIR}`);
+    }
+    if (bootConfig.modeConfig.mode === 'aggressive') {
+      console.warn('[token-slimmer] aggressive mode is lossy and may affect agent tool-calling behavior.');
+    }
+  });
+}
+
+module.exports = {
+  createApp,
+  buildForwardHeaders,
+  captureRequest,
+  configPayload,
+  createRuntimeConfig,
+  createStats,
+  redactSensitive,
+  recordRequestStats,
+  statsPayload,
+  targetUrl,
+  updateConfigFromBody
+};

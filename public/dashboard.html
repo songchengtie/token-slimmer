@@ -1,0 +1,764 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Token Slimmer Dashboard</title>
+  <style>
+    :root {
+      color-scheme: light;
+      --bg: #f6f7f9;
+      --panel: #ffffff;
+      --text: #1f2933;
+      --muted: #5f6b7a;
+      --line: #d9dee7;
+      --green: #18794e;
+      --blue: #1d5fbf;
+      --amber: #a15c00;
+      --red: #b42318;
+    }
+    * { box-sizing: border-box; }
+    body {
+      margin: 0;
+      font: 14px/1.45 system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+      color: var(--text);
+      background: var(--bg);
+    }
+    header {
+      padding: 24px clamp(16px, 4vw, 40px) 16px;
+      border-bottom: 1px solid var(--line);
+      background: var(--panel);
+    }
+    h1, h2 { margin: 0; letter-spacing: 0; }
+    h1 { font-size: 26px; }
+    h2 { font-size: 16px; }
+    main {
+      padding: 20px clamp(16px, 4vw, 40px) 40px;
+      display: grid;
+      gap: 18px;
+    }
+    .topline {
+      display: flex;
+      flex-wrap: wrap;
+      gap: 10px;
+      margin-top: 12px;
+      color: var(--muted);
+    }
+    .badge {
+      display: inline-flex;
+      align-items: center;
+      min-height: 26px;
+      padding: 3px 9px;
+      border-radius: 999px;
+      border: 1px solid var(--line);
+      background: #fff;
+      color: var(--muted);
+      font-size: 12px;
+      white-space: nowrap;
+    }
+    .badge.good { border-color: #b7dfc8; color: var(--green); background: #eef9f2; }
+    .badge.warn { border-color: #f1c27d; color: var(--amber); background: #fff7e8; }
+    .badge.bad { border-color: #f1a7a1; color: var(--red); background: #fff1f0; }
+    .grid {
+      display: grid;
+      grid-template-columns: repeat(4, minmax(180px, 1fr));
+      gap: 14px;
+    }
+    .panel {
+      background: var(--panel);
+      border: 1px solid var(--line);
+      border-radius: 8px;
+      padding: 16px;
+      min-width: 0;
+    }
+    .wide { grid-column: 1 / -1; }
+    .metric {
+      font-size: 28px;
+      font-weight: 700;
+      margin-top: 8px;
+    }
+    .muted { color: var(--muted); }
+    .kv {
+      display: grid;
+      grid-template-columns: minmax(120px, 180px) minmax(0, 1fr);
+      gap: 8px 12px;
+      margin-top: 12px;
+    }
+    .value {
+      overflow-wrap: anywhere;
+      font-family: ui-monospace, SFMono-Regular, Consolas, "Liberation Mono", monospace;
+      font-size: 13px;
+    }
+    .flow {
+      display: grid;
+      grid-template-columns: minmax(0, 1fr) auto minmax(0, 1fr) auto minmax(0, 1fr);
+      gap: 10px;
+      align-items: center;
+      margin-top: 12px;
+    }
+    .node {
+      border: 1px solid var(--line);
+      border-radius: 8px;
+      padding: 12px;
+      background: #fafbfc;
+      min-width: 0;
+    }
+    .arrow { color: var(--blue); font-weight: 700; }
+    table {
+      width: 100%;
+      border-collapse: collapse;
+      margin-top: 12px;
+      table-layout: fixed;
+    }
+    th, td {
+      padding: 9px 8px;
+      border-bottom: 1px solid var(--line);
+      text-align: left;
+      vertical-align: top;
+      overflow-wrap: anywhere;
+    }
+    th {
+      font-size: 12px;
+      color: var(--muted);
+      font-weight: 600;
+      background: #fafbfc;
+    }
+    .num { text-align: right; font-variant-numeric: tabular-nums; }
+    .breakdown {
+      display: flex;
+      flex-wrap: wrap;
+      gap: 6px;
+    }
+    .pill {
+      border: 1px solid var(--line);
+      border-radius: 999px;
+      padding: 2px 7px;
+      font-size: 12px;
+      white-space: nowrap;
+      background: #fff;
+    }
+    .error { color: var(--red); }
+    .bar-row {
+      display: grid;
+      grid-template-columns: 150px minmax(120px, 1fr) 80px;
+      gap: 10px;
+      align-items: center;
+      margin: 8px 0;
+    }
+    .bar-track {
+      height: 10px;
+      border-radius: 999px;
+      background: #e8ecf2;
+      overflow: hidden;
+    }
+    .bar-fill {
+      height: 100%;
+      width: 0;
+      background: var(--blue);
+    }
+    .xray-detail {
+      border: 1px solid var(--line);
+      border-radius: 8px;
+      padding: 12px;
+      background: #fafbfc;
+      margin-top: 12px;
+    }
+    .settings-grid {
+      display: grid;
+      grid-template-columns: repeat(3, minmax(180px, 1fr));
+      gap: 14px;
+      margin-top: 14px;
+    }
+    label {
+      display: grid;
+      gap: 6px;
+      color: var(--muted);
+      font-size: 12px;
+      font-weight: 600;
+    }
+    input, select {
+      width: 100%;
+      min-height: 38px;
+      border: 1px solid var(--line);
+      border-radius: 6px;
+      padding: 7px 9px;
+      color: var(--text);
+      background: #fff;
+      font: inherit;
+    }
+    input[disabled], select[disabled] {
+      color: var(--muted);
+      background: #f1f3f6;
+    }
+    .actions {
+      display: flex;
+      flex-wrap: wrap;
+      gap: 10px;
+      margin-top: 14px;
+      align-items: center;
+    }
+    button {
+      min-height: 38px;
+      border: 1px solid var(--line);
+      border-radius: 6px;
+      padding: 7px 12px;
+      background: #fff;
+      color: var(--text);
+      font: inherit;
+      cursor: pointer;
+    }
+    button.primary {
+      border-color: #8cb7f3;
+      background: #eef5ff;
+      color: var(--blue);
+      font-weight: 600;
+    }
+    button.danger {
+      border-color: #f1a7a1;
+      background: #fff1f0;
+      color: var(--red);
+    }
+    .field-note {
+      min-height: 17px;
+      color: var(--muted);
+      font-size: 12px;
+      font-weight: 400;
+    }
+    .field-note.locked { color: var(--amber); }
+    .inline-warnings {
+      display: flex;
+      flex-wrap: wrap;
+      gap: 8px;
+      margin-top: 12px;
+    }
+    @media (max-width: 980px) {
+      .grid { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+      .settings-grid { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+      .flow { grid-template-columns: 1fr; }
+      .arrow { display: none; }
+    }
+    @media (max-width: 640px) {
+      .grid { grid-template-columns: 1fr; }
+      .settings-grid { grid-template-columns: 1fr; }
+      table { display: block; overflow-x: auto; white-space: nowrap; }
+    }
+  </style>
+</head>
+<body>
+  <header>
+    <h1>Token Slimmer</h1>
+    <div class="topline">
+      <span id="runningBadge" class="badge">proxy running</span>
+      <span id="upstreamBadge" class="badge">upstream</span>
+      <span id="captureBadge" class="badge">capture</span>
+      <span id="modeBadge" class="badge">mode</span>
+      <span id="cacheAwareBadge" class="badge">cache-aware</span>
+      <span id="warningBadge" class="badge warn" hidden>lossy mode warning</span>
+    </div>
+  </header>
+
+  <main>
+    <section class="panel wide">
+      <h2>Request Path</h2>
+      <div class="flow">
+        <div class="node">
+          <div class="muted">Client Base URL</div>
+          <div id="clientBaseUrl" class="value">loading</div>
+        </div>
+        <div class="arrow">-&gt;</div>
+        <div class="node">
+          <div class="muted">Token Slimmer listens on</div>
+          <div id="listenUrl" class="value">loading</div>
+        </div>
+        <div class="arrow">-&gt;</div>
+        <div class="node">
+          <div class="muted">Upstream URL</div>
+          <div id="upstreamUrl" class="value">loading</div>
+        </div>
+      </div>
+    </section>
+
+    <section class="grid">
+      <div class="panel">
+        <h2>Total Saved</h2>
+        <div id="totalSaved" class="metric">0</div>
+        <div id="overallPercent" class="muted">0.0% estimated</div>
+      </div>
+      <div class="panel">
+        <h2>Total Requests</h2>
+        <div id="totalRequests" class="metric">0</div>
+        <div class="muted">latest 100 kept in memory</div>
+      </div>
+      <div class="panel">
+        <h2>Before / After</h2>
+        <div id="beforeAfter" class="metric">0 / 0</div>
+        <div class="muted">estimated prompt tokens</div>
+      </div>
+      <div class="panel">
+        <h2>Auth Mode</h2>
+        <div id="authMode" class="metric">loading</div>
+        <div id="apiKeyStatus" class="muted">API key status unknown</div>
+      </div>
+    </section>
+
+    <section class="grid">
+      <div class="panel">
+        <h2>Current Config</h2>
+        <div class="kv">
+          <div class="muted">Host</div><div id="configHost" class="value">loading</div>
+          <div class="muted">Port</div><div id="configPort" class="value">loading</div>
+          <div class="muted">Mode</div><div id="configMode" class="value">loading</div>
+          <div class="muted">Cache-aware</div><div id="configCacheAware" class="value">loading</div>
+          <div class="muted">Capture</div><div id="configCapture" class="value">loading</div>
+          <div class="muted">Capture dir</div><div id="configCaptureDir" class="value">loading</div>
+          <div class="muted">Strip tools</div><div id="configStrip" class="value">loading</div>
+          <div class="muted">Heartbeat</div><div id="configHeartbeat" class="value">loading</div>
+        </div>
+      </div>
+      <div class="panel wide">
+        <h2>Settings Lite</h2>
+        <div class="muted">
+          Client Base URL -> Token Slimmer -> Upstream URL. Token Slimmer does not store API keys by default; in forward mode it forwards the client Authorization header.
+        </div>
+        <div class="inline-warnings">
+          <span id="settingsAggressiveWarning" class="badge warn" hidden>Aggressive mode may affect agent behavior</span>
+          <span id="settingsStripWarning" class="badge warn" hidden>STRIP_TOOLS can affect tool-calling behavior</span>
+        </div>
+        <div class="settings-grid">
+          <label>
+            Upstream URL
+            <input id="settingsUpstreamUrl" type="url" spellcheck="false">
+            <span id="lockUPSTREAM_URL" class="field-note"></span>
+          </label>
+          <label>
+            Mode
+            <select id="settingsMode">
+              <option value="safe">safe</option>
+              <option value="balanced">balanced</option>
+              <option value="aggressive">aggressive</option>
+            </select>
+            <span id="lockMODE" class="field-note"></span>
+          </label>
+          <label>
+            Auth Mode
+            <select id="settingsAuthMode">
+              <option value="forward_client_authorization">forward client Authorization</option>
+              <option value="configured_upstream_key">configured upstream key</option>
+            </select>
+            <span id="lockAUTH_MODE" class="field-note"></span>
+          </label>
+          <label>
+            Upstream API Key
+            <input id="settingsApiKey" type="password" autocomplete="off" placeholder="leave blank to keep existing key">
+            <span id="lockUPSTREAM_API_KEY" class="field-note"></span>
+          </label>
+          <label>
+            Capture Requests
+            <select id="settingsCapture">
+              <option value="false">off</option>
+              <option value="true">on</option>
+            </select>
+            <span id="lockCAPTURE_REQUESTS" class="field-note"></span>
+          </label>
+          <label>
+            Cache-aware Mode
+            <select id="settingsCacheAware">
+              <option value="false">off</option>
+              <option value="true">on</option>
+            </select>
+            <span id="lockCACHE_AWARE" class="field-note"></span>
+          </label>
+          <label>
+            Strip Tools
+            <select id="settingsStripTools">
+              <option value="false">off</option>
+              <option value="true">on</option>
+            </select>
+            <span id="lockSTRIP_TOOLS" class="field-note"></span>
+          </label>
+          <label>
+            Heartbeat Interval
+            <input id="settingsHeartbeat" type="number" min="1" step="1">
+            <span id="lockHEARTBEAT_INTERVAL" class="field-note"></span>
+          </label>
+          <label>
+            Host
+            <input id="settingsHost" type="text" disabled>
+            <span class="field-note">visible only; restart required to change later</span>
+          </label>
+          <label>
+            Port
+            <input id="settingsPort" type="number" disabled>
+            <span class="field-note">visible only; restart required to change later</span>
+          </label>
+        </div>
+        <div class="actions">
+          <button id="saveSettings" class="primary" type="button">Save Settings</button>
+          <button id="testUpstream" type="button">Test Upstream</button>
+          <button id="clearKey" class="danger" type="button">Clear upstream key</button>
+          <span id="settingsStatus" class="muted"></span>
+        </div>
+      </div>
+      <div class="panel wide">
+        <h2>Token X-Ray</h2>
+        <div class="muted">X-Ray is observational only. It does not change upstream prompts.</div>
+        <div class="grid" style="margin-top: 12px;">
+          <div class="panel">
+            <h2>Biggest Category</h2>
+            <div id="xrayBiggestCategory" class="metric">none</div>
+          </div>
+          <div class="panel">
+            <h2>Biggest Saved</h2>
+            <div id="xrayBiggestSaved" class="metric">none</div>
+          </div>
+          <div class="panel">
+            <h2>Largest Tool Output</h2>
+            <div id="xrayLargestToolOutput" class="metric">none</div>
+          </div>
+          <div class="panel">
+            <h2>Largest Tools Schema</h2>
+            <div id="xrayLargestToolsSchema" class="metric">none</div>
+          </div>
+        </div>
+        <div class="grid" style="margin-top: 12px;">
+          <div class="panel">
+            <h2>Before Compression</h2>
+            <div id="xrayBeforeBars"></div>
+          </div>
+          <div class="panel">
+            <h2>After Compression</h2>
+            <div id="xrayAfterBars"></div>
+          </div>
+          <div class="panel">
+            <h2>Saved By Category</h2>
+            <div id="xraySavedBars"></div>
+          </div>
+          <div class="panel">
+            <h2>Latest Request X-Ray</h2>
+            <div id="latestXray" class="muted">No requests yet.</div>
+          </div>
+        </div>
+        <h2 style="margin-top: 14px;">Top Token Wasters</h2>
+        <table>
+          <thead>
+            <tr>
+              <th style="width: 130px;">Category</th>
+              <th style="width: 220px;">Label</th>
+              <th class="num" style="width: 100px;">Tokens</th>
+              <th class="num" style="width: 100px;">Saved</th>
+              <th>Preview</th>
+            </tr>
+          </thead>
+          <tbody id="xrayWastersRows">
+            <tr><td colspan="5" class="muted">No X-Ray data yet.</td></tr>
+          </tbody>
+        </table>
+      </div>
+      <div class="panel wide">
+        <h2>Recent Requests</h2>
+        <div class="muted">Token accounting is approximate and not billing-grade. This page polls every 2 seconds.</div>
+        <table>
+          <thead>
+            <tr>
+              <th style="width: 150px;">Time</th>
+              <th style="width: 70px;">Method</th>
+              <th>Path</th>
+              <th style="width: 90px;">Mode</th>
+              <th class="num" style="width: 85px;">Before</th>
+              <th class="num" style="width: 85px;">After</th>
+              <th class="num" style="width: 90px;">Saved</th>
+              <th style="width: 210px;">Breakdown</th>
+              <th style="width: 90px;">Status</th>
+              <th style="width: 90px;">X-Ray</th>
+            </tr>
+          </thead>
+          <tbody id="requestRows">
+            <tr><td colspan="10" class="muted">No requests yet.</td></tr>
+          </tbody>
+        </table>
+        <div id="requestXrayDetail" class="xray-detail muted">Select a request to inspect X-Ray details.</div>
+      </div>
+    </section>
+  </main>
+
+  <script>
+    const $ = id => document.getElementById(id);
+    let latestConfig = null;
+    let latestRequests = [];
+    const xrayCategories = [
+      ['toolsSchema', 'tools schema'],
+      ['systemMessages', 'system'],
+      ['userMessages', 'user'],
+      ['assistantMessages', 'assistant'],
+      ['toolMessages', 'tool'],
+      ['functionMessages', 'function'],
+      ['otherMessages', 'other']
+    ];
+
+    function fmt(n) {
+      return Number(n || 0).toLocaleString();
+    }
+
+    function shortTime(iso) {
+      if (!iso) return '';
+      return new Date(iso).toLocaleTimeString();
+    }
+
+    function setBadge(el, text, kind) {
+      el.textContent = text;
+      el.className = `badge ${kind || ''}`.trim();
+    }
+
+    function applyLock(field, controlId) {
+      const fieldInfo = latestConfig?.fields?.[field];
+      const control = $(controlId);
+      const note = $(`lock${field}`);
+      if (!control || !note || !fieldInfo) return;
+      control.disabled = fieldInfo.lockedByEnv === true;
+      note.textContent = fieldInfo.lockedByEnv ? 'locked by env' : '';
+      note.className = fieldInfo.lockedByEnv ? 'field-note locked' : 'field-note';
+    }
+
+    function booleanValue(id) {
+      return $(id).value === 'true';
+    }
+
+    function fieldLocked(field) {
+      return latestConfig?.fields?.[field]?.lockedByEnv === true;
+    }
+
+    async function loadConfig() {
+      const config = await fetch('/api/config').then(r => r.json());
+      latestConfig = config;
+      const listenUrl = `${location.protocol}//${location.hostname}:${config.listenPort}`;
+      $('clientBaseUrl').textContent = `${listenUrl}/v1`;
+      $('listenUrl').textContent = listenUrl;
+      $('upstreamUrl').textContent = config.upstreamUrl;
+      $('configHost').textContent = config.host;
+      $('configPort').textContent = String(config.listenPort);
+      $('configMode').textContent = config.mode;
+      $('configCacheAware').textContent = config.cacheAware ? 'on' : 'off';
+      $('configCapture').textContent = config.captureEnabled ? 'on' : 'off';
+      $('configCaptureDir').textContent = config.captureDir;
+      $('configStrip').textContent = config.stripToolsEnabled ? 'on' : 'off';
+      $('configHeartbeat').textContent = String(config.heartbeatInterval);
+      $('authMode').textContent = config.authMode === 'configured_upstream_key' ? 'configured key' : 'forward client';
+      $('apiKeyStatus').textContent = config.apiKey.status === 'configured'
+        ? `API key configured, ending in ${config.apiKey.last4}`
+        : 'API key not stored; client Authorization is forwarded';
+
+      setBadge($('runningBadge'), 'proxy running', 'good');
+      setBadge($('upstreamBadge'), config.upstreamUrl ? 'upstream configured' : 'upstream missing', config.upstreamUrl ? 'good' : 'bad');
+      setBadge($('captureBadge'), config.captureEnabled ? 'capture on' : 'capture off', config.captureEnabled ? 'warn' : '');
+      setBadge($('modeBadge'), `mode ${config.mode}`, config.mode === 'aggressive' ? 'warn' : 'good');
+      setBadge($('cacheAwareBadge'), config.cacheAware ? 'cache-aware on' : 'cache-aware off', config.cacheAware ? 'good' : '');
+      $('warningBadge').hidden = !(config.mode === 'aggressive' || config.stripToolsEnabled);
+      $('settingsAggressiveWarning').hidden = config.mode !== 'aggressive';
+      $('settingsStripWarning').hidden = !config.stripToolsEnabled;
+      if (config.cacheAware) {
+        $('settingsStatus').textContent = 'Cache-aware mode favors upstream cache stability over maximum compression.';
+      }
+
+      $('settingsUpstreamUrl').value = config.upstreamUrl;
+      $('settingsMode').value = config.mode;
+      $('settingsAuthMode').value = config.authMode;
+      $('settingsApiKey').value = '';
+      $('settingsApiKey').placeholder = config.apiKey.status === 'configured'
+        ? `configured, ending in ${config.apiKey.last4}; blank keeps existing`
+        : 'leave blank to keep no key';
+      $('settingsCapture').value = String(config.captureEnabled);
+      $('settingsCacheAware').value = String(config.cacheAware);
+      $('settingsStripTools').value = String(config.stripToolsEnabled);
+      $('settingsHeartbeat').value = String(config.heartbeatInterval);
+      $('settingsHost').value = config.host;
+      $('settingsPort').value = String(config.listenPort);
+
+      applyLock('UPSTREAM_URL', 'settingsUpstreamUrl');
+      applyLock('MODE', 'settingsMode');
+      applyLock('AUTH_MODE', 'settingsAuthMode');
+      applyLock('UPSTREAM_API_KEY', 'settingsApiKey');
+      applyLock('CAPTURE_REQUESTS', 'settingsCapture');
+      applyLock('CACHE_AWARE', 'settingsCacheAware');
+      applyLock('STRIP_TOOLS', 'settingsStripTools');
+      applyLock('HEARTBEAT_INTERVAL', 'settingsHeartbeat');
+      $('clearKey').disabled = config.fields.UPSTREAM_API_KEY.lockedByEnv === true;
+    }
+
+    async function saveSettings(clearKey) {
+      const payload = {};
+      if (!fieldLocked('UPSTREAM_URL')) payload.UPSTREAM_URL = $('settingsUpstreamUrl').value;
+      if (!fieldLocked('MODE')) payload.MODE = $('settingsMode').value;
+      if (!fieldLocked('AUTH_MODE')) payload.AUTH_MODE = $('settingsAuthMode').value;
+      if (!fieldLocked('CAPTURE_REQUESTS')) payload.CAPTURE_REQUESTS = booleanValue('settingsCapture');
+      if (!fieldLocked('CACHE_AWARE')) payload.CACHE_AWARE = booleanValue('settingsCacheAware');
+      if (!fieldLocked('STRIP_TOOLS')) payload.STRIP_TOOLS = booleanValue('settingsStripTools');
+      if (!fieldLocked('HEARTBEAT_INTERVAL')) payload.HEARTBEAT_INTERVAL = Number($('settingsHeartbeat').value || 3);
+      if (!fieldLocked('UPSTREAM_API_KEY') && $('settingsApiKey').value) payload.UPSTREAM_API_KEY = $('settingsApiKey').value;
+      if (clearKey) {
+        if (fieldLocked('UPSTREAM_API_KEY')) {
+          $('settingsStatus').textContent = 'Upstream key is locked by env.';
+          return;
+        }
+        payload.clearUpstreamApiKey = true;
+      }
+
+      $('settingsStatus').textContent = clearKey ? 'Clearing key...' : 'Saving...';
+      const response = await fetch('/api/config', {
+        method: 'POST',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify(payload)
+      });
+      const result = await response.json();
+      if (!response.ok) {
+        $('settingsStatus').textContent = result.lockedFields
+          ? `Not saved: ${result.lockedFields.join(', ')} locked by env`
+          : `Not saved: ${result.error || response.status}`;
+        return;
+      }
+      $('settingsStatus').textContent = clearKey ? 'Upstream key cleared.' : 'Settings saved.';
+      await loadConfig();
+    }
+
+    async function testUpstream() {
+      $('settingsStatus').textContent = 'Testing upstream...';
+      const response = await fetch('/api/config/test-upstream', { method: 'POST' });
+      const result = await response.json();
+      if (result.ok) {
+        $('settingsStatus').textContent = `Upstream OK (HTTP ${result.status})`;
+      } else {
+        $('settingsStatus').textContent = `Upstream failed${result.status ? ` (HTTP ${result.status})` : ''}: ${result.error || 'unknown error'}`;
+      }
+    }
+
+    function renderRows(requests) {
+      if (!requests.length) {
+        $('requestRows').innerHTML = '<tr><td colspan="10" class="muted">No requests yet.</td></tr>';
+        return;
+      }
+      $('requestRows').innerHTML = requests.map((req, index) => {
+        const breakdown = req.breakdown || {};
+        const statusKind = req.error || req.statusCode >= 500 ? 'bad' : req.statusCode >= 400 ? 'warn' : 'good';
+        const stream = req.stream ? ' stream' : '';
+        const stripped = req.toolsStripped ? ' stripped' : '';
+        return `<tr>
+          <td>${shortTime(req.timestamp)}</td>
+          <td>${req.method || ''}</td>
+          <td><span class="value">${req.path || ''}</span><span class="muted">${stream}${stripped}</span>${req.error ? `<div class="error">${req.error}</div>` : ''}</td>
+          <td>${req.mode || ''}</td>
+          <td class="num">${fmt(req.originalTokens)}</td>
+          <td class="num">${fmt(req.compressedTokens)}</td>
+          <td class="num">${fmt(req.savedTokens)} (${req.savedPercent || 0}%)</td>
+          <td><div class="breakdown">
+            <span class="pill">schema ${fmt(breakdown.schemaSlimming)}</span>
+            <span class="pill">content ${fmt(breakdown.contentCompression)}</span>
+            <span class="pill">strip ${fmt(breakdown.toolsStripping)}</span>
+          </div></td>
+          <td><span class="badge ${statusKind}">${req.statusCode || ''}</span></td>
+          <td><button type="button" data-xray-index="${index}">Expand</button></td>
+        </tr>`;
+      }).join('');
+    }
+
+    function renderBars(targetId, breakdown) {
+      const values = xrayCategories.map(([key, label]) => ({ key, label, value: Number(breakdown?.[key] || 0) }));
+      const max = Math.max(1, ...values.map(item => item.value));
+      $(targetId).innerHTML = values.map(item => `
+        <div class="bar-row">
+          <div>${item.label}</div>
+          <div class="bar-track"><div class="bar-fill" style="width:${Math.max(2, (item.value / max) * 100)}%"></div></div>
+          <div class="num">${fmt(item.value)}</div>
+        </div>
+      `).join('');
+    }
+
+    function renderWasters(rows, targetId) {
+      if (!rows || rows.length === 0) {
+        $(targetId).innerHTML = '<tr><td colspan="5" class="muted">No X-Ray data yet.</td></tr>';
+        return;
+      }
+      $(targetId).innerHTML = rows.map(item => `
+        <tr>
+          <td>${item.category || ''}</td>
+          <td>${item.label || ''}</td>
+          <td class="num">${fmt(item.estimatedTokens)}</td>
+          <td class="num">${fmt(item.savedEstimatedTokens)}</td>
+          <td>${item.preview || ''}</td>
+        </tr>
+      `).join('');
+    }
+
+    function renderXray(stats) {
+      const xray = stats.xray || {};
+      renderBars('xrayBeforeBars', xray.tokenBreakdownBefore || {});
+      renderBars('xrayAfterBars', xray.tokenBreakdownAfter || {});
+      renderBars('xraySavedBars', xray.tokenBreakdownSaved || {});
+      const biggest = xray.biggestTokenCategory || {};
+      const saved = xray.biggestSavedCategory || {};
+      $('xrayBiggestCategory').textContent = biggest.category ? `${biggest.category}: ${fmt(biggest.tokens)}` : 'none';
+      $('xrayBiggestSaved').textContent = saved.category ? `${saved.category}: ${fmt(saved.tokens)}` : 'none';
+      $('xrayLargestToolOutput').textContent = xray.largestSingleToolOutput ? fmt(xray.largestSingleToolOutput.estimatedTokens) : 'none';
+      $('xrayLargestToolsSchema').textContent = xray.largestToolsSchema ? fmt(xray.largestToolsSchema.estimatedTokens) : 'none';
+      renderWasters(xray.topTokenWasters || [], 'xrayWastersRows');
+      const latest = latestRequests[0];
+      $('latestXray').innerHTML = latest
+        ? `${latest.path}<br>before ${fmt(latest.originalTokens)} / after ${fmt(latest.compressedTokens)} / saved ${fmt(latest.savedTokens)}`
+        : 'No requests yet.';
+    }
+
+    function renderRequestXray(index) {
+      const req = latestRequests[index];
+      if (!req) return;
+      const rows = xrayCategories.map(([key, label]) => `
+        <tr><td>${label}</td><td class="num">${fmt(req.tokenBreakdownBefore?.[key])}</td><td class="num">${fmt(req.tokenBreakdownAfter?.[key])}</td><td class="num">${fmt(req.tokenBreakdownSaved?.[key])}</td></tr>
+      `).join('');
+      const wasters = (req.topTokenWasters || []).map(item => `
+        <tr><td>${item.category}</td><td>${item.label}</td><td class="num">${fmt(item.estimatedTokens)}</td><td class="num">${fmt(item.savedEstimatedTokens)}</td><td>${item.preview}</td></tr>
+      `).join('');
+      $('requestXrayDetail').className = 'xray-detail';
+      $('requestXrayDetail').innerHTML = `
+        <h2>Request X-Ray</h2>
+        <div class="kv">
+          <div class="muted">Path</div><div class="value">${req.path}</div>
+          <div class="muted">Mode</div><div>${req.mode}</div>
+          <div class="muted">Stream</div><div>${req.stream}</div>
+          <div class="muted">Before / after / saved</div><div>${fmt(req.originalTokens)} / ${fmt(req.compressedTokens)} / ${fmt(req.savedTokens)}</div>
+          <div class="muted">Tools stripped</div><div>${req.toolsStripped}</div>
+          <div class="muted">Compression breakdown</div><div>schema ${fmt(req.breakdown?.schemaSlimming)}, content ${fmt(req.breakdown?.contentCompression)}, strip ${fmt(req.breakdown?.toolsStripping)}</div>
+        </div>
+        <table><thead><tr><th>Category</th><th class="num">Before</th><th class="num">After</th><th class="num">Saved</th></tr></thead><tbody>${rows}</tbody></table>
+        <h2 style="margin-top: 12px;">Top Token Wasters</h2>
+        <table><thead><tr><th>Category</th><th>Label</th><th class="num">Tokens</th><th class="num">Saved</th><th>Preview</th></tr></thead><tbody>${wasters || '<tr><td colspan="5" class="muted">None</td></tr>'}</tbody></table>
+      `;
+    }
+
+    async function loadStats() {
+      const stats = await fetch('/api/stats').then(r => r.json());
+      latestRequests = stats.recentRequests || [];
+      $('totalSaved').textContent = fmt(stats.totalEstimatedSavedTokens);
+      $('overallPercent').textContent = `${stats.overallSavedPercent || 0}% estimated`;
+      $('totalRequests').textContent = fmt(stats.totalRequests);
+      $('beforeAfter').textContent = `${fmt(stats.totalEstimatedTokensBefore)} / ${fmt(stats.totalEstimatedTokensAfter)}`;
+      renderRows(latestRequests);
+      renderXray(stats);
+    }
+
+    async function refresh() {
+      try {
+        await Promise.all([loadConfig(), loadStats()]);
+      } catch (err) {
+        setBadge($('runningBadge'), 'dashboard disconnected', 'bad');
+      }
+    }
+
+    refresh();
+    setInterval(loadStats, 2000);
+    $('saveSettings').addEventListener('click', () => saveSettings(false));
+    $('clearKey').addEventListener('click', () => saveSettings(true));
+    $('testUpstream').addEventListener('click', testUpstream);
+    $('requestRows').addEventListener('click', event => {
+      const button = event.target.closest('button[data-xray-index]');
+      if (button) renderRequestXray(Number(button.dataset.xrayIndex));
+    });
+  </script>
+</body>
+</html>
