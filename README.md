@@ -1,14 +1,25 @@
-# Token Slimmer
+Token Slimmer
 
-Token observability and compression proxy for LLM agents.
+Token X-Ray and compression proxy for LLM agents.
 
-Token Slimmer is a small OpenAI-compatible HTTP proxy for reducing repeated
-input token waste in agent workflows. It focuses on tool schema slimming, tool
-output compression, streaming pass-through, and clear estimated savings reports.
+See where your agent burns tokens, then reduce repeated tool schemas and bulky tool outputs through a drop-in OpenAI-compatible proxy.
 
-It is intended to be simple and inspectable. It is not described as
-production-ready yet.
+Client / Hermes / OpenClaw / Claude Code
+        ↓
+Token Slimmer  :3999
+        ↓
+OpenAI-compatible upstream API
+Real Hermes capture results
 
+Measured on a real local Hermes capture corpus with 1,550,698 estimated input tokens.
+
+Mode	Tools stripped?	Compressed	Saved	Saved %	Recommended use
+safe	no	1,542,375	8,323	0.5%	low-risk baseline
+balanced	no	1,197,640	353,058	22.8%	recommended for normal agent use
+aggressive	no	1,002,979	547,719	35.3%	higher compression, lossy
+aggressive + STRIP_TOOLS	yes	712,629	838,069	54.0%	experimental, may affect tool calling
+
+Token accounting is approximate and intended for comparison, not billing reconciliation.
 ## What It Does
 
 Client -> Token Slimmer -> OpenAI-compatible upstream API
