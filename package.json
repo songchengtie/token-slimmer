@@ -1,0 +1,13 @@
+{
+  "name": "token-slimmer",
+  "version": "1.0.0",
+  "description": "LLM token compression proxy \u2014 \u770160%\u8f93\u5165token\uff0c\u65e0\u9700\u6539\u4ee3\u7801",
+  "main": "server.js",
+  "scripts": {
+    "start": "node server.js",
+    "dev": "node --watch server.js"
+  },
+  "dependencies": {
+    "express": "^4.18.2"
+  }
+}

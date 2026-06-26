@@ -1,0 +1,11 @@
+version: '3'
+services:
+  token-slimmer:
+    build: .
+    ports:
+      - "3999:3999"
+    environment:
+      - UPSTREAM_URL=http://host.docker.internal:3000
+      - SLIM_TOOLS=1
+      - COMPRESS_CONTENT=1
+    restart: unless-stopped
