@@ -1,5 +1,7 @@
 # Token Slimmer
 
+[简体中文](README.zh-CN.md)
+
 **Token X-Ray and compression proxy for LLM agents.**
 
 See where your agent burns tokens, then reduce repeated tool schemas and bulky tool outputs through a drop-in OpenAI-compatible proxy.
@@ -16,12 +18,12 @@ OpenAI-compatible upstream API
 
 Measured on a real local Hermes capture corpus with **1,550,698 estimated input tokens**.
 
-| Mode                     | Tools stripped? | Compressed |   Saved | Saved % | Recommended use                       |
-| ------------------------ | --------------: | ---------: | ------: | ------: | ------------------------------------- |
-| safe                     |              no |  1,542,375 |   8,323 |    0.5% | low-risk baseline                     |
-| balanced                 |              no |  1,197,640 | 353,058 |   22.8% | recommended for normal agent use      |
-| aggressive               |              no |  1,002,979 | 547,719 |   35.3% | higher compression, lossy             |
-| aggressive + STRIP_TOOLS |             yes |    712,629 | 838,069 |   54.0% | experimental, may affect tool calling |
+| Mode                     | Original  | Tools stripped? | Compressed |   Saved | Saved % | Recommended use                       |
+| ------------------------ | --------: | --------------: | ---------: | ------: | ------: | ------------------------------------- |
+| safe                     | 1,550,698 |              no |  1,542,375 |   8,323 |    0.5% | low-risk baseline                     |
+| balanced                 | 1,550,698 |              no |  1,197,640 | 353,058 |   22.8% | recommended for normal agent use      |
+| aggressive               | 1,550,698 |              no |  1,002,979 | 547,719 |   35.3% | higher compression, lossy             |
+| aggressive + STRIP_TOOLS | 1,550,698 |             yes |    712,629 | 838,069 |   54.0% | experimental, may affect tool calling |
 
 > Token accounting is approximate and intended for comparison, not billing reconciliation.
 
@@ -124,12 +126,6 @@ Blank key input keeps the existing key. Use "Clear upstream key" to remove it.
 
 Use "Test Upstream" to call the configured upstream `/v1/models`. The response
 reports ok/failed and HTTP status, with errors sanitized so keys are not leaked.
-
-Screenshot placeholder:
-
-```text
-Dashboard screenshot to be added after the first visual release check.
-```
 
 ## URLs And Auth
 
