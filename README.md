@@ -1,25 +1,34 @@
-Token Slimmer
+# Token Slimmer
 
-Token X-Ray and compression proxy for LLM agents.
+**Token X-Ray and compression proxy for LLM agents.**
 
 See where your agent burns tokens, then reduce repeated tool schemas and bulky tool outputs through a drop-in OpenAI-compatible proxy.
 
+```text
 Client / Hermes / OpenClaw / Claude Code
         ↓
 Token Slimmer  :3999
         ↓
 OpenAI-compatible upstream API
-Real Hermes capture results
+```
 
-Measured on a real local Hermes capture corpus with 1,550,698 estimated input tokens.
+## Real Hermes capture results
 
-Mode	Tools stripped?	Compressed	Saved	Saved %	Recommended use
-safe	no	1,542,375	8,323	0.5%	low-risk baseline
-balanced	no	1,197,640	353,058	22.8%	recommended for normal agent use
-aggressive	no	1,002,979	547,719	35.3%	higher compression, lossy
-aggressive + STRIP_TOOLS	yes	712,629	838,069	54.0%	experimental, may affect tool calling
+Measured on a real local Hermes capture corpus with **1,550,698 estimated input tokens**.
 
-Token accounting is approximate and intended for comparison, not billing reconciliation.
+| Mode                     | Tools stripped? | Compressed |   Saved | Saved % | Recommended use                       |
+| ------------------------ | --------------: | ---------: | ------: | ------: | ------------------------------------- |
+| safe                     |              no |  1,542,375 |   8,323 |    0.5% | low-risk baseline                     |
+| balanced                 |              no |  1,197,640 | 353,058 |   22.8% | recommended for normal agent use      |
+| aggressive               |              no |  1,002,979 | 547,719 |   35.3% | higher compression, lossy             |
+| aggressive + STRIP_TOOLS |             yes |    712,629 | 838,069 |   54.0% | experimental, may affect tool calling |
+
+> Token accounting is approximate and intended for comparison, not billing reconciliation.
+
+<img width="2556" height="1037" alt="image" src="https://github.com/user-attachments/assets/e19c5c5c-f5ed-4f25-9dda-8f6509926dc3" />
+
+<img width="2517" height="764" alt="image" src="https://github.com/user-attachments/assets/c7972305-c63c-4f6a-8b45-20989b81d2fd" />
+
 ## What It Does
 
 Client -> Token Slimmer -> OpenAI-compatible upstream API
