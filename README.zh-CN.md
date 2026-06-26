@@ -2,24 +2,40 @@
 
 [English](README.md)
 
-面向 LLM agent 的 token 可观测与压缩代理。
+Token Slimmer 是一个面向 LLM agent 的 OpenAI-compatible 压缩代理。它提供 Token X-Ray 诊断能力，可以观察 token 消耗，精简重复的工具 schema，压缩较大的工具输出，并可选地为重复的大型输出启用本地摘要缓存。
 
-Token Slimmer 是一个小型 OpenAI-compatible HTTP proxy，用来减少 agent 工作流里反复发送的输入 token 浪费。它保留项目的核心思路：代理请求、精简 tool schema、压缩 tool/function 输出，并用清晰的估算报告告诉你大概省了多少 token。
+```text
+Client / Hermes / OpenClaw / Claude Code
+        ->
+Token Slimmer :3999
+        ->
+OpenAI-compatible upstream API
+```
 
-项目目标是简单、可检查、适合本地使用。它还不宣称 production-ready。
+Token 统计是估算值，适合做对比和观察，不适合作为账单级精确计算。
 
 ## 它做什么
 
-```text
-Client -> Token Slimmer -> OpenAI-compatible upstream API
-```
-
 - 代理 OpenAI-compatible `/v1/chat/completions` 请求。
-- 精简重复的 `tools` schema，移除低价值 JSON Schema 元数据。
+- 对 streaming chat completions 做透传，不解析 SSE chunks。
+- 对未知 `/v1/*` 路径直接转发到上游，不做压缩，减少兼容性风险。
+- 精简重复的工具 schema，移除低价值 JSON Schema 元数据。
 - 在 `balanced` 和 `aggressive` 模式下压缩 tool/function 输出。
-- 对 streaming chat completions 做 passthrough，不解析 SSE chunks。
-- 返回估算 token savings headers，并输出一行清楚的请求日志。
-- 对未知 `/v1/*` 路径直接转发，避免破坏非 chat API。
+- 在响应 header、日志、dashboard 和 benchmark 报告中显示估算 token savings。
+- 通过 Token X-Ray 按工具 schema、system/user/assistant/tool/function messages 等类别展示 token 消耗。
+- 可选启用本地 summary cache，对重复出现的大型工具输出使用确定性摘要引用。
+
+## 为什么对 Agent 有用
+
+Agent 流量通常会反复发送较大的工具定义，并携带很长的命令输出、文件读取结果、JSON 结果、日志和历史消息。Token Slimmer 的目标是先让这些成本可见，再在尽量保留 agent 兼容性的前提下减少低价值重复内容。
+
+常见用途：
+
+- 对比压缩前后的估算 prompt tokens。
+- 看清 token 主要花在哪些类别上。
+- 减少重复工具 schema 的开销。
+- 压缩噪声较多的 tool/function 输出，同时保留错误、路径、堆栈、JSON key 和命令上下文。
+- 从本地真实 agent 流量中采集 benchmark corpus。
 
 ## 快速开始
 
@@ -29,16 +45,10 @@ cp .env.example .env
 npm start
 ```
 
-默认情况下，代理监听：
+默认监听地址：
 
 ```text
 http://localhost:3999
-```
-
-并转发到：
-
-```text
-http://127.0.0.1:3000
 ```
 
 把 OpenAI-compatible client 的 Base URL 指向：
@@ -53,23 +63,227 @@ http://localhost:3999/v1
 http://localhost:3999/dashboard
 ```
 
-## 配置
+默认上游地址：
 
-| Env var | Default | 说明 |
+```text
+http://127.0.0.1:3000
+```
+
+## 推荐配置
+
+日常使用：
+
+```env
+MODE=balanced
+STRIP_TOOLS=0
+SUMMARY_CACHE=0
+AGENT_PROFILE=generic
+PROVIDER_PROFILE=generic
+```
+
+Hermes / OpenClaw 实验性使用：
+
+```env
+MODE=balanced
+AGENT_PROFILE=hermes
+PROVIDER_PROFILE=openai
+SUMMARY_CACHE=1
+```
+
+`balanced` 适合作为日常 agent 使用的推荐模式。summary cache 是实验性功能，默认关闭；只有在你用真实 agent 工作流测试过之后，才建议开启。
+
+## Dashboard
+
+Dashboard 由同一个 Express 进程提供：
+
+```text
+http://localhost:3999/dashboard
+```
+
+它会显示：
+
+- 当前运行配置
+- Settings Lite
+- auth mode 和 API key 状态
+- 估算总节省量
+- Token X-Ray 分类统计
+- 最近请求列表
+- 单请求 savings breakdown
+- `aggressive`、`STRIP_TOOLS` 和 cache-aware 行为的风险提示
+
+页面每 2 秒轮询一次 `/api/stats`。
+
+![Token Slimmer dashboard](https://github.com/user-attachments/assets/e19c5c5c-f5ed-4f25-9dda-8f6509926dc3)
+
+![Token X-Ray dashboard table](https://github.com/user-attachments/assets/c7972305-c63c-4f6a-8b45-20989b81d2fd)
+
+## 压缩模式
+
+### `MODE=safe`
+
+安全模式是最低风险的 baseline。
+
+- 在安全场景下 minify JSON。
+- 从工具 schema 中移除冗余字段，例如 `examples`、`example`、`default`、`title`、`$schema`、`markdownDescription` 和 `deprecated`。
+- 可能 minify 看起来像 JSON 的 tool output string。
+- 不截断普通工具输出。
+- 不 strip `tools`。
+
+### `MODE=balanced`
+
+平衡模式推荐用于日常 agent 工作流。
+
+- 包含 safe mode 的 schema slimming。
+- 保守压缩 tool/function 输出。
+- 尽量保留重要错误行、文件路径、堆栈、JSON key、命令输出和 exit status。
+- 不 strip `tools`。
+
+### `MODE=aggressive`
+
+激进模式是有损模式，可能影响 agent 行为。
+
+- 包含 safe mode 的 schema slimming。
+- 允许更多截断和省略重复输出。
+- 只有在 `STRIP_TOOLS=1` 时才可能 strip `tools`。
+- 使用 heartbeat 机制周期性重新发送 cached tools。
+
+请只在你关心的 agent/provider 组合上测试后，再使用激进模式。
+
+### `CACHE_AWARE=1`
+
+Cache-aware mode 更偏向上游 prompt cache 稳定性，而不是最大压缩率。
+
+- 禁用 tools stripping。
+- 保留 X-Ray 观察能力。
+- 不添加 request-body metadata。
+- 偏向稳定、确定性的 transforms。
+- 不改 system messages。
+- 除非显式设置 `SLIM_TOOLS=1`，否则禁用 top-level tool schema slimming。
+
+## Provider 和 Agent Profiles
+
+Provider profiles 只影响 token 估算。当前实现是轻量启发式估算，代码结构上预留了以后接入精确 tokenizer 的空间。
+
+支持的 `PROVIDER_PROFILE`：
+
+```text
+generic, openai, anthropic, gemini, deepseek, qwen
+```
+
+默认：
+
+```env
+PROVIDER_PROFILE=generic
+```
+
+Agent profiles 会影响 tool/function 输出的压缩策略，但不会修改 user、system 或 assistant messages。
+
+支持的 `AGENT_PROFILE`：
+
+```text
+generic, hermes, openclaw, codex, claude-code
+```
+
+默认：
+
+```env
+AGENT_PROFILE=generic
+```
+
+Hermes / OpenClaw / Codex profiles 会更注意保留 agent 相关结构，例如文件内容、日志、shell 输出、diff 和测试失败信息。未知或无法分类的输出会回退到 generic 的 balanced/aggressive 行为。
+
+## Summary Cache
+
+Summary cache 是实验性功能，默认关闭。
+
+```env
+SUMMARY_CACHE=0
+SUMMARY_CACHE_DIR=.token-slimmer-cache
+SUMMARY_CACHE_MIN_TOKENS=1200
+```
+
+启用后，Token Slimmer 会对大型 tool/function 输出计算稳定 hash。如果同样的内容再次出现，可以把重复输出替换成一个较短的本地引用和确定性摘要。
+
+Summary cache 的特点：
+
+- 只在本地工作
+- 不调用 LLM
+- 默认只存摘要，不存完整原始工具输出
+- 遇到疑似敏感内容会跳过缓存，例如 API key、bearer token、cookie、password、`.env` 风格 secret 和 private key
+- 可能影响 agent 行为，启用前应使用真实工作流测试
+
+## Benchmarks
+
+Benchmark 离线运行，不需要 API keys。
+
+```bash
+npm run bench
+npm run bench:corpus captures/
+```
+
+v0.5-beta balanced benchmark，来自本地 Hermes capture corpus：
+
+```text
+Corpus: 58 captured requests
+```
+
+| Variant | Mode | Summary cache | Original | Compressed | Saved | Saved % | Summary cache contribution |
+| --- | --- | ---: | ---: | ---: | ---: | ---: | ---: |
+| default | balanced | off | 1,550,698 | 1,197,640 | 353,058 | 22.8% | 0 |
+| openai/hermes/cache 0 | balanced | off | 1,550,698 | 1,197,640 | 353,058 | 22.8% | 0 |
+| openai/hermes/cache 1 | balanced | on | 1,550,698 | 1,088,875 | 461,823 | 29.8% | 302,956 |
+
+同一 corpus 上的模式对比：
+
+| Mode | Original | Compressed | Saved | Saved % | 建议用途 |
+| --- | ---: | ---: | ---: | ---: | --- |
+| safe | 1,550,698 | 1,542,375 | 8,323 | 0.5% | 最低风险 baseline |
+| balanced | 1,550,698 | 1,197,640 | 353,058 | 22.8% | 推荐日常 agent 使用 |
+| aggressive | 1,550,698 | 1,002,979 | 547,719 | 35.3% | 有损，先测试 |
+| aggressive + `STRIP_TOOLS` | 1,550,698 | 712,629 | 838,069 | 54.0% | 实验性，可能影响 tool calling |
+
+实际结果取决于 agent 流量形态、工具 schema 大小、历史消息长度和工具输出体量。这些数字是估算值，不应作为账单核算依据。
+
+`bench:corpus` 支持文件、目录和 glob：
+
+```bash
+npm run bench:corpus captures/
+npm run bench:corpus bench/samples/*.json
+```
+
+`eval:modes` 是 corpus mode comparison 的 alias：
+
+```bash
+npm run eval:modes bench/samples
+```
+
+## 兼容性
+
+| Target | 状态 | 说明 |
 | --- | --- | --- |
-| `PORT` | `3999` | 本地代理端口。 |
-| `HOST` | `127.0.0.1` | 监听地址。只有明确要暴露代理，比如 Docker 场景，才建议用 `0.0.0.0`。 |
-| `UPSTREAM_URL` | `http://127.0.0.1:3000` | 上游 OpenAI-compatible API base URL，不包含 `/v1`。 |
-| `AUTH_MODE` | `forward_client_authorization` | `forward_client_authorization` 或 `configured_upstream_key`。 |
-| `UPSTREAM_API_KEY` | empty | 可选上游 key。为空时转发客户端的 `Authorization`。 |
-| `MODE` | `safe` | 压缩模式：`safe`、`balanced` 或 `aggressive`。 |
-| `CACHE_AWARE` | `0` | 更偏向上游 prompt/cache 稳定性，而不是最大压缩率。 |
-| `SLIM_TOOLS` | `1` | 启用 tool schema slimming。 |
-| `COMPRESS_CONTENT` | mode-based | tool output compression。`safe` 只做 JSON minification。 |
-| `STRIP_TOOLS` | `0` | 只在 `MODE=aggressive` 时生效，而且必须显式设置为 `1`。 |
-| `HEARTBEAT_INTERVAL` | `3` | aggressive tools stripping 下，每 N 次请求重新发送一次 tools。 |
-| `CAPTURE_REQUESTS` | `0` | 保存传入的 JSON `/v1/*` 请求，用于本地 corpus benchmark。 |
-| `CAPTURE_DIR` | `captures` | request capture 文件目录。 |
+| OpenAI-compatible chat completions | 支持 | 主路径是 `/v1/chat/completions`。 |
+| Streaming chat completions | 支持 | SSE chunks 透传，不解析。 |
+| Unknown `/v1/*` paths | 转发 | 直接发给上游，不压缩。 |
+| Hermes | 预期兼容 | 设计上关注重复 tools 和大型 tool outputs；仍建议用你的 provider 实测。 |
+| OpenClaw | 预期兼容 | safe/balanced 应尽量保持 tool 行为；aggressive 需要谨慎测试。 |
+| one-api | 预期兼容 | 把 one-api 配成 `UPSTREAM_URL` 使用。 |
+| Claude Code / Cursor | 谨慎实验 | 行为取决于它们当前的 provider adapter 和 headers，不要假设完全兼容。 |
+
+## 安全说明
+
+- safe mode 是最低风险 baseline。
+- balanced mode 推荐日常使用。
+- aggressive mode 是有损模式，可能影响 agent 行为。
+- `STRIP_TOOLS` 可能影响 tool calling。
+- summary cache 是实验性功能，默认关闭，也可能影响 agent 行为。
+- Streaming responses 会透传，不解析 chunks。
+- 未知 `/v1/*` 路径会不压缩直接转发。
+- Token 统计是估算值，用于观察和对比，不用于账单级核算。
+- 压缩模式会改变请求内容，因此可能影响 provider-side prompt/cache behavior。
+- Token X-Ray 本身只是观察功能，不添加 model-visible metadata。
+- Hop-by-hop request headers 不会转发；安全的 custom provider headers 会保留。
+
+## 配置
 
 运行时配置加载优先级：
 
@@ -77,143 +291,53 @@ http://localhost:3999/dashboard
 defaults < config.local.json < environment variables
 ```
 
-由环境变量设置的字段会在 dashboard 里显示为 locked，不能从 dashboard 编辑。
+由环境变量设置的字段会在 dashboard 中显示为 locked，不能在那里编辑。
 
-## Dashboard
+| Env var | Default | 说明 |
+| --- | --- | --- |
+| `PORT` | `3999` | 本地代理端口。 |
+| `HOST` | `127.0.0.1` | 监听地址。只有明确要暴露代理时，例如 Docker 场景，才建议使用 `0.0.0.0`。 |
+| `UPSTREAM_URL` | `http://127.0.0.1:3000` | 上游 OpenAI-compatible API base URL，不包含 `/v1`。 |
+| `AUTH_MODE` | `forward_client_authorization` | `forward_client_authorization` 或 `configured_upstream_key`。 |
+| `UPSTREAM_API_KEY` | empty | 可选上游 key。为空时转发客户端的 `Authorization`。 |
+| `MODE` | `safe` | 压缩模式：`safe`、`balanced` 或 `aggressive`。 |
+| `PROVIDER_PROFILE` | `generic` | token 估算 profile。 |
+| `AGENT_PROFILE` | `generic` | agent-aware tool/function 输出压缩 profile。 |
+| `CACHE_AWARE` | `0` | 更偏向上游 prompt/cache 稳定性，而不是最大压缩率。 |
+| `SUMMARY_CACHE` | `0` | 实验性本地摘要缓存。默认关闭。 |
+| `SUMMARY_CACHE_DIR` | `.token-slimmer-cache` | summary-only cache JSON 文件目录。 |
+| `SUMMARY_CACHE_MIN_TOKENS` | `1200` | 工具输出达到多少估算 token 后才考虑 summary cache。 |
+| `SLIM_TOOLS` | `1` | 启用工具 schema slimming。 |
+| `COMPRESS_CONTENT` | `1` | 启用 tool/function output compression。safe mode 下只 minify JSON-looking output。 |
+| `STRIP_TOOLS` | `0` | 只在 `MODE=aggressive` 下生效，并且必须显式设置为 `1`。 |
+| `HEARTBEAT_INTERVAL` | `3` | aggressive tools stripping 下，每 N 次请求重新发送一次 tools。 |
+| `CAPTURE_REQUESTS` | `0` | 保存传入的 JSON `/v1/*` 请求，用于本地 corpus benchmark。 |
+| `CAPTURE_DIR` | `captures` | request capture 文件目录。 |
 
-Dashboard 是同一个 Express 进程提供的本地状态页：
-
-```text
-http://localhost:3999/dashboard
-```
-
-它会显示 runtime config、Settings Lite、auth mode、近似总 savings、Token X-Ray、recent requests、单请求 savings breakdown，以及 `aggressive` 或 `STRIP_TOOLS` 的风险提示。页面每 2 秒轮询 `/api/stats`。
-
-Settings Lite 当前可以编辑：
-
-- `UPSTREAM_URL`
-- `MODE`
-- `AUTH_MODE`
-- `UPSTREAM_API_KEY`，只写不读
-- `CAPTURE_REQUESTS`
-- `CACHE_AWARE`
-- `STRIP_TOOLS`
-- `HEARTBEAT_INTERVAL`
-
-`HOST` 和 `PORT` 只展示，不做热编辑。以后如果支持修改，应标记为需要重启，不做运行时端口切换。
-
-默认情况下，Token Slimmer 不保存 API key。如果你通过 Settings Lite 保存 `UPSTREAM_API_KEY`，它会写入本地 `config.local.json`；`/api/config` 和 dashboard 只会显示 `not_stored` 或 `configured` 加最后 4 位。空白 key 输入会保留已有 key。使用 “Clear upstream key” 可以清除它。
-
-“Test Upstream” 会调用当前配置的 upstream `/v1/models`，返回 ok/failed 和 HTTP status。错误信息会被清理，避免泄露 key。
-
-## URLs 和 Auth
-
-这里有三个不同概念：
+### URLs 和 Auth
 
 | 项目 | 示例 | 含义 |
 | --- | --- | --- |
-| Client Base URL | `http://localhost:3999/v1` | 在 agent 或 OpenAI-compatible client 里配置这个地址，让它先请求 Token Slimmer。 |
+| Client Base URL | `http://localhost:3999/v1` | 在 agent 或 OpenAI-compatible client 中配置这个地址，让它先请求 Token Slimmer。 |
 | Token Slimmer listen URL | `http://localhost:3999` | 本地 proxy server 和 dashboard 的地址。 |
 | Upstream URL | `http://127.0.0.1:3000` | Token Slimmer 真正转发到的 OpenAI-compatible API。 |
 
-默认 auth 行为是 pass-through：Token Slimmer 不保存 API keys，只把客户端的 `Authorization` header 转发给 upstream API。
+默认 auth 行为是 pass-through：Token Slimmer 不保存 API key，只把客户端的 `Authorization` header 转发给 upstream API。
 
-如果设置 `AUTH_MODE=configured_upstream_key` 并配置了 `UPSTREAM_API_KEY`，Token Slimmer 会在转发 upstream 时用：
+如果设置 `AUTH_MODE=configured_upstream_key` 并配置了 `UPSTREAM_API_KEY`，Token Slimmer 会在转发 upstream 时用 `Authorization: Bearer <UPSTREAM_API_KEY>` 替换客户端传来的 `Authorization`。它也会移除客户端的 `x-api-key`，避免同时转发两份凭据。完整 key 永远不会从 `/api/config` 返回，也不会显示在 dashboard。
 
-```text
-Authorization: Bearer <UPSTREAM_API_KEY>
-```
-
-替换客户端传来的 `Authorization`。它也会移除客户端的 `x-api-key`，避免同时转发两份凭据。完整 key 永远不会从 `/api/config` 返回，也不会显示在 dashboard。
-
-## Token X-Ray：看清 agent 把 token 花在哪里
-
-Agent 工作流经常反复发送大型 tools schema，也会积累很长的 tool outputs 和历史消息。Token X-Ray 会按类别估算 prompt token：
-
-- top-level tools schema
-- system messages
-- user messages
-- assistant messages
-- tool messages
-- function messages
-- other messages
-
-Dashboard 会展示 before/after/saved category breakdown、简单横向条、top token wasters，以及 Recent Requests 里的单请求 X-Ray 展开详情。Corpus benchmark 也会打印 X-Ray category savings。
-
-X-Ray 本身只是观察功能。它不会改变 upstream prompts，不会往 request JSON 里加 metadata，也不会修改会影响模型行为的 messages/tools/headers。
-
-压缩模式会改变发给 upstream 的请求内容，因此可能影响 provider-side prompt/cache behavior。如果你更关心上游 prompt cache 稳定性，而不是最大压缩率，可以启用 cache-aware mode。
-
-## 真实 Hermes capture 结果
-
-以下数字来自本地真实 Hermes capture corpus，不是 synthetic benchmark samples。
-
-| Mode | Original | Compressed | Saved | Saved % | 说明 |
-| --- | ---: | ---: | ---: | ---: | --- |
-| `safe` | 1,550,698 | 1,542,375 | 8,323 | 0.5% | 低风险 baseline，收益较小。 |
-| `balanced` | 1,550,698 | 1,197,640 | 353,058 | 22.8% | 推荐普通 agent 使用，不 strip tools。 |
-| `aggressive` | 1,550,698 | 1,002,979 | 547,719 | 35.3% | 更高 savings，但更有损。 |
-| `aggressive` + `STRIP_TOOLS` | 1,550,698 | 712,629 | 838,069 | 54.0% | 实验性选项，可能影响 tool calling。 |
-
-实际效果会随 tools schema 大小、conversation history 和 tool output 体量变化。
-
-## Compression Modes
-
-### `MODE=safe`（默认）
-
-只做低风险变换。
-
-- 转发请求时 minify JSON payload。
-- 从 `tools` 移除冗余 schema 字段：`examples`、`example`、`default`、`title`、`$schema`、`markdownDescription` 和 `deprecated`。
-- 可能 minify 看起来像 JSON 的 tool output string。
-- 不截断 tool output。
-- 不 strip `tools`。
-
-### `MODE=balanced`
-
-保守压缩 tool output。
-
-- 包含所有 safe-mode schema slimming。
-- 压缩 tool/function output，同时尽量保留重要 error lines、file paths、stack traces、JSON keys 和 command-like output。
-- 不 strip `tools`。
-
-### `MODE=aggressive`
-
-给明确接受 agent 行为风险的用户使用的有损模式。
-
-- 包含 safe-mode schema slimming。
-- 允许更激进地截断和省略重复输出。
-- 只有在 `STRIP_TOOLS=1` 时才可能 strip `tools`。
-- 使用 heartbeat 行为周期性重发 cached tools。
-
-`aggressive` 可能影响 tool-calling behavior。只建议在你关心的 agent/provider 组合上测试之后再使用。
-
-### `CACHE_AWARE=1`
-
-Cache-aware mode 不是默认模式。启用后：
-
-- 禁用 tools stripping
-- X-Ray observation 仍然工作
-- 不添加 request-body metadata
-- 更偏向稳定、确定性的 transforms
-- 不改 system messages
-- 除非显式设置 `SLIM_TOOLS=1`，否则禁用 top-level tool schema slimming
-
-Cache-aware mode 更偏向 upstream cache stability，而不是最大压缩率。
-
-## Response Headers
+### Response Headers
 
 对 chat completions 和 forwarded JSON `/v1/*` 请求，Token Slimmer 会添加：
 
 | Header | 含义 |
 | --- | --- |
 | `x-token-slimmer-mode` | 当前模式。 |
+| `x-token-slimmer-provider-profile` | 当前 provider token estimation profile。 |
 | `x-token-slimmer-before-estimate` | 压缩前估算 prompt tokens。 |
 | `x-token-slimmer-after-estimate` | 压缩后估算 prompt tokens。 |
 | `x-token-slimmer-saved-estimate` | 估算 saved tokens。 |
 | `x-token-slimmer-breakdown` | `schema`、`output` 和 `strip` savings breakdown。 |
-
-token estimator 是轻量近似值，用于观测和比较，不用于 billing reconciliation。
 
 日志示例：
 
@@ -221,79 +345,7 @@ token estimator 是轻量近似值，用于观测和比较，不用于 billing r
 [token-slimmer] mode=balanced | POST /v1/chat/completions | before=1200 | after=900 | saved=300 (25.0%) | schema=180 | output=120 | strip=0
 ```
 
-## Streaming
-
-当 `/v1/chat/completions` 收到 `stream: true` 时，Token Slimmer 会直接转发 upstream response stream。
-
-- 保留 upstream status codes。
-- 转发相关 response headers。
-- 不解析或重写 streamed chunks。
-- 请求压缩仍然发生在发送 upstream request 之前。
-
-## Compatibility
-
-| Target | Status | 说明 |
-| --- | --- | --- |
-| OpenAI-compatible chat completions | Supported | 主路径：`/v1/chat/completions`。 |
-| Streaming chat completions | Supported | SSE chunks 原样代理，不解析。 |
-| Unknown `/v1/*` paths | Forwarded | 直接转发 upstream，不做压缩。 |
-| Hermes | Expected compatible | 设计上针对重复 tools 和大 tool outputs；仍建议用你的 provider 实测。 |
-| OpenClaw | Expected compatible | `safe` 应尽量保持 tool behavior；谨慎测试 `aggressive`。 |
-| one-api | Expected compatible | 把 one-api 作为 upstream `UPSTREAM_URL` 使用。 |
-| Claude Code / Cursor | Carefully experimental | 这些工具在部分配置下可以使用 OpenAI-compatible endpoints，但取决于当前 provider adapter 和 headers，不要过度承诺兼容。 |
-
-## Benchmarks
-
-Benchmark 是离线的，不需要 API keys。
-
-内置小型 smoke benchmark 适合检查脚本是否可用，但 tiny prompts 看不出真实收益。Agent-heavy requests，尤其是重复 tools schema 和大型 tool outputs，通常会显示更明显 savings。
-
-```bash
-npm run bench
-MODE=balanced npm run bench
-MODE=aggressive STRIP_TOOLS=1 npm run bench
-```
-
-benchmark 会打印：
-
-- original estimated prompt tokens
-- compressed estimated prompt tokens
-- estimated savings
-- savings by category
-- X-Ray breakdown for tools schema, system/user/assistant messages, tool/function outputs, and other messages
-- mode used
-
-### Corpus Benchmarks
-
-用 `bench:corpus` 对多个文件做更真实的模式对比。它会把每个输入分别跑过 `safe`、`balanced`、`aggressive` 和 `aggressive+STRIP_TOOLS`。
-
-```bash
-npm run bench:corpus captures/
-npm run bench:corpus bench/samples/*.json
-```
-
-每个文件会打印：
-
-- original estimated tokens
-- compressed estimated tokens
-- saved tokens
-- saved percent
-- savings by tools schema, tool output, and tools stripping
-- aggregate X-Ray category totals across all files
-
-`eval:modes` 是同一个 corpus mode comparison 的轻量 alias：
-
-```bash
-npm run eval:modes bench/samples
-```
-
-合成大样本位于 `bench/samples/`：
-
-- large tool schema
-- large JSON tool output
-- large log/code output
-
-### Request Capture
+## Request Capture
 
 开启 capture，从真实流量构建本地 benchmark corpus：
 
@@ -301,38 +353,9 @@ npm run eval:modes bench/samples
 CAPTURE_REQUESTS=1 CAPTURE_DIR=captures npm start
 ```
 
-Captured files 包含 method、path、headers 和 body。敏感 headers 和 body fields 会被 redacted，只要 key 是 `authorization`、`api_key`、`token`、`password`、`cookie` 或 `x-api-key`。
+Captured files 包含 method、path、headers 和 body。当 key 是 `authorization`、`api_key`、`token`、`password`、`cookie` 或 `x-api-key` 时，敏感 headers 和 body fields 会被 redacted。
 
-## Tests
-
-```bash
-npm test
-```
-
-测试覆盖：
-
-- schema slimming
-- JSON、log、code-like 和 prose-ish output compression behavior
-- `safe`、`balanced` 和 `aggressive` 模式边界
-- `safe` mode never stripping tools
-- aggressive tools stripping only when explicitly enabled
-- basic proxy forwarding
-- streaming proxy forwarding
-- Settings Lite config updates and env locks
-- upstream API key masking and clearing
-- upstream connectivity test sanitization
-- Token X-Ray category breakdowns and redacted previews
-- cache-aware mode disabling tools stripping
-
-## Safety Notes
-
-- `safe` 是默认模式，因为 agent compatibility 比最大压缩率更重要。
-- `balanced` 适合日常 agent 使用，尤其是 tool outputs 很大的场景。
-- `aggressive` 是有损模式，可能改变 agent behavior。依赖它之前，请查看 logs 并用真实 agent 测试。
-- X-Ray 只是观察功能，不改变 upstream prompts。
-- 压缩模式可能影响 provider-side prompt/cache behavior，因为它们会改变 request content。
-- 未知 `/v1/*` 路径默认直接转发，避免破坏非 chat APIs。
-- Hop-by-hop request headers 不会被转发。安全的 custom provider headers 会被保留。
+不要提交本地 captures。它们已经被 `.gitignore` 忽略。
 
 ## Docker
 
@@ -350,6 +373,15 @@ docker run -p 3999:3999 \
 ```bash
 docker compose up --build
 ```
+
+## 测试
+
+```bash
+npm run lint
+npm test
+```
+
+测试覆盖 schema slimming、压缩模式边界、safe mode 行为、proxy forwarding、streaming passthrough、request stats、Settings Lite 配置更新、Token X-Ray breakdown、provider/agent profiles、summary cache 行为和 redaction。
 
 ## License
 
