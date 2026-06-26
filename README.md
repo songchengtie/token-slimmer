@@ -27,6 +27,29 @@ Measured on a real local Hermes capture corpus with **1,550,698 estimated input 
 
 > Token accounting is approximate and intended for comparison, not billing reconciliation.
 
+v0.5-beta balanced benchmark variants on the same capture corpus:
+
+| Variant | Mode | Summary cache | Compressed | Saved | Saved % | Notes |
+| --- | --- | ---: | ---: | ---: | ---: | --- |
+| default | balanced | off | 1,197,640 | 353,058 | 22.8% | recommended normal-use baseline |
+| openai/hermes/cache 0 | balanced | off | 1,197,640 | 353,058 | 22.8% | Hermes profile without cache should not regress versus default |
+| openai/hermes/cache 1 | balanced | on | 1,088,875 | 461,823 | 29.8% | experimental summary cache enabled |
+
+Balanced mode is the recommended mode for normal use. Aggressive mode and
+`STRIP_TOOLS` can affect agent behavior and should be tested against your real
+agent workflow before use. Summary cache is experimental and disabled by
+default.
+
+## Release Notes
+
+### v0.5-beta
+
+- Adds provider-aware token estimation profiles while keeping `generic` as the default.
+- Adds agent-aware tool/function output compression profiles for Hermes, OpenClaw, Codex, and Claude Code style traffic.
+- Adds experimental local summary cache for repeated large tool/function outputs; it is disabled by default and stores summaries rather than raw content.
+- Keeps safe mode conservative and keeps summary cache, tools stripping, aggressive mode, auth changes, and streaming changes opt-in or unchanged.
+- Recommended beta settings remain `MODE=balanced`, `STRIP_TOOLS=0`, and `SUMMARY_CACHE=0`.
+
 <img width="2556" height="1037" alt="image" src="https://github.com/user-attachments/assets/e19c5c5c-f5ed-4f25-9dda-8f6509926dc3" />
 
 <img width="2517" height="764" alt="image" src="https://github.com/user-attachments/assets/c7972305-c63c-4f6a-8b45-20989b81d2fd" />
@@ -75,7 +98,12 @@ http://localhost:3999/dashboard
 | `AUTH_MODE` | `forward_client_authorization` | `forward_client_authorization` or `configured_upstream_key`. |
 | `UPSTREAM_API_KEY` | empty | Optional upstream key. When empty, client `Authorization` is forwarded. |
 | `MODE` | `safe` | Compression mode: `safe`, `balanced`, or `aggressive`. |
+| `PROVIDER_PROFILE` | `generic` | Token estimation profile: `generic`, `openai`, `anthropic`, `gemini`, `deepseek`, or `qwen`. |
+| `AGENT_PROFILE` | `generic` | Agent-aware tool output compression profile: `generic`, `hermes`, `openclaw`, `codex`, or `claude-code`. |
 | `CACHE_AWARE` | `0` | Favor upstream prompt/cache stability over maximum compression. |
+| `SUMMARY_CACHE` | `0` | Experimental local summary cache for repeated large tool/function outputs. Disabled by default. |
+| `SUMMARY_CACHE_DIR` | `.token-slimmer-cache` | Directory for summary-only cache JSON files. |
+| `SUMMARY_CACHE_MIN_TOKENS` | `1200` | Minimum estimated original tool/function output tokens before summary cache is considered. |
 | `SLIM_TOOLS` | `1` | Enable tool schema slimming. |
 | `COMPRESS_CONTENT` | mode-based | Tool output compression. In `safe`, only JSON minification is used. |
 | `STRIP_TOOLS` | `0` | Only honored in `MODE=aggressive`; must be explicitly set to `1`. |
@@ -91,6 +119,31 @@ defaults < config.local.json < environment variables
 
 Fields set by environment variables are shown as locked in the dashboard and
 cannot be edited there.
+
+## Recommended Settings
+
+Default beta recommendation:
+
+```env
+MODE=balanced
+STRIP_TOOLS=0
+SUMMARY_CACHE=0
+AGENT_PROFILE=generic
+PROVIDER_PROFILE=generic
+```
+
+Experimental Hermes/OpenClaw-style use:
+
+```env
+MODE=balanced
+AGENT_PROFILE=hermes
+PROVIDER_PROFILE=openai
+SUMMARY_CACHE=1
+```
+
+Summary cache is experimental and disabled by default. It stores deterministic
+local summaries for repeated large tool/function outputs, not full raw content.
+Keep it off unless you have tested it with your agent workflow.
 
 ## Dashboard
 
@@ -312,7 +365,7 @@ For each file, it prints:
 - compressed estimated tokens
 - saved tokens
 - saved percent
-- savings by tools schema, tool output, and tools stripping
+- savings by tools schema, tool output, summary cache, and tools stripping
 - aggregate X-Ray category totals across all files
 
 `eval:modes` is a lightweight alias for the same corpus mode comparison:
@@ -359,6 +412,8 @@ The test suite covers:
 - upstream connectivity test sanitization
 - Token X-Ray category breakdowns and redacted previews
 - cache-aware mode disabling tools stripping
+- summary cache defaults, repeated-output replacement, deterministic summaries,
+  and sensitive-content skip behavior
 
 ## Safety Notes
 
@@ -368,6 +423,8 @@ The test suite covers:
 - Aggressive mode is lossy and can change agent behavior. Review logs and test
   with your real agent before relying on it.
 - X-Ray is observational only and does not change upstream prompts.
+- Summary cache is experimental, disabled by default, and should not be enabled
+  until tested against real agent traffic.
 - Compression modes may affect provider-side prompt/cache behavior because they
   can change request content.
 - Unknown `/v1/*` paths are forwarded without compression to avoid surprising

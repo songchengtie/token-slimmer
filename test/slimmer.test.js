@@ -1,18 +1,28 @@
 const test = require('node:test');
 const assert = require('node:assert/strict');
 const fs = require('fs');
+const os = require('os');
 const path = require('path');
 const {
   buildXRay,
+  classifyToolOutput,
   compressToolContent,
   createState,
   minifyJsonText,
   modeConfigFromEnv,
+  normalizeAgentProfile,
   processChatBody,
   safePreview,
   tokenBreakdown,
   slimTools
 } = require('../lib/slimmer');
+const {
+  estimateTokens,
+  normalizeProviderProfile
+} = require('../lib/tokenizer');
+const {
+  summarizeToolOutput
+} = require('../lib/summary-cache');
 
 function sampleTool(description = 'Search files in the current workspace.') {
   return {
@@ -91,8 +101,253 @@ test('safe mode is default and never strips tools', () => {
   }, config, state);
 
   assert.equal(config.mode, 'safe');
+  assert.equal(config.providerProfile, 'generic');
   assert.ok(result.body.tools);
   assert.equal(result.report.toolsStripped, false);
+});
+
+test('invalid provider profile falls back to generic', () => {
+  assert.equal(normalizeProviderProfile('unknown-provider'), 'generic');
+  assert.equal(modeConfigFromEnv({ PROVIDER_PROFILE: 'unknown-provider' }).providerProfile, 'generic');
+});
+
+test('invalid agent profile falls back to generic', () => {
+  assert.equal(normalizeAgentProfile('unknown-agent'), 'generic');
+  assert.equal(modeConfigFromEnv({ AGENT_PROFILE: 'unknown-agent' }).agentProfile, 'generic');
+});
+
+test('provider profile affects token estimates', () => {
+  const text = 'hello world '.repeat(200);
+  const generic = estimateTokens(text, 'generic');
+  const qwen = estimateTokens(text, 'qwen');
+  const result = processChatBody({
+    model: 'gpt-test',
+    messages: [{ role: 'user', content: text }]
+  }, modeConfigFromEnv({ PROVIDER_PROFILE: 'qwen' }), createState());
+
+  assert.ok(qwen > generic);
+  assert.equal(result.report.providerProfile, 'qwen');
+  assert.ok(result.report.beforeTokens > processChatBody({
+    model: 'gpt-test',
+    messages: [{ role: 'user', content: text }]
+  }, modeConfigFromEnv({}), createState()).report.beforeTokens);
+});
+
+test('tool output classifier detects common agent output types', () => {
+  assert.equal(classifyToolOutput('{"ok":true,"items":[1,2]}'), 'json');
+  assert.equal(classifyToolOutput('diff --git a/a.js b/a.js\n@@ -1 +1 @@\n-old\n+new'), 'diff');
+  assert.equal(classifyToolOutput('$ npm test\nError: failed\nexit code: 1'), 'shell');
+});
+
+test('tool output classifier does not treat markdown bullet lists as diffs', () => {
+  const markdown = [
+    '# Token Slimmer',
+    '',
+    '- safe mode',
+    '- balanced mode',
+    '- aggressive mode',
+    '',
+    '---',
+    '',
+    '- another bullet'
+  ].join('\n');
+
+  assert.notEqual(classifyToolOutput(markdown), 'diff');
+});
+
+test('agent diff compression preserves file names, hunk headers, and changed lines', () => {
+  const input = [
+    'diff --git a/src/app.js b/src/app.js',
+    'index 123..456 100644',
+    '--- a/src/app.js',
+    '+++ b/src/app.js',
+    '@@ -1,120 +1,120 @@',
+    ...Array.from({ length: 80 }, (_, i) => ` unchanged context ${i}`),
+    '-const oldValue = 1;',
+    '+const newValue = 2;',
+    ...Array.from({ length: 80 }, (_, i) => ` more context ${i}`)
+  ].join('\n');
+  const out = compressToolContent(input, 'balanced', 'codex');
+
+  assert.match(out, /diff --git a\/src\/app\.js b\/src\/app\.js/);
+  assert.match(out, /@@ -1,120 \+1,120 @@/);
+  assert.match(out, /-const oldValue = 1;/);
+  assert.match(out, /\+const newValue = 2;/);
+  assert.ok(out.length < input.length);
+});
+
+test('agent shell compression preserves errors, paths, stack traces, commands, and exit code', () => {
+  const input = [
+    '$ npm test',
+    ...Array.from({ length: 90 }, (_, i) => `info line ${i}`),
+    'Error: failed to load C:\\repo\\src\\index.js',
+    '    at run (C:\\repo\\src\\index.js:42:7)',
+    'Traceback (most recent call last):',
+    'File "C:/repo/script.py", line 12, in main',
+    'exit code: 1',
+    ...Array.from({ length: 90 }, (_, i) => `tail noise ${i}`)
+  ].join('\n');
+  const out = compressToolContent(input, 'balanced', 'hermes');
+
+  assert.match(out, /\$ npm test/);
+  assert.match(out, /Error: failed/);
+  assert.match(out, /C:\\repo\\src\\index\.js/);
+  assert.match(out, /at run/);
+  assert.match(out, /File "C:\/repo\/script\.py", line 12/);
+  assert.match(out, /exit code: 1/);
+  assert.ok(out.length < input.length);
+});
+
+test('agent code compression preserves imports, signatures, TODOs, and error lines', () => {
+  const input = [
+    "import fs from 'fs';",
+    'export function parseConfig(input) {',
+    '  // TODO: validate schema',
+    '  if (!input) throw new Error("missing input");',
+    '}',
+    'class Runner {',
+    '  run() { return parseConfig({}); }',
+    '}',
+    ...Array.from({ length: 180 }, (_, i) => `const filler${i} = ${i};`)
+  ].join('\n');
+  const out = compressToolContent(input, 'balanced', 'codex');
+
+  assert.match(out, /import fs from 'fs'/);
+  assert.match(out, /export function parseConfig/);
+  assert.match(out, /TODO/);
+  assert.match(out, /throw new Error/);
+  assert.match(out, /class Runner/);
+  assert.ok(out.length < input.length);
+});
+
+test('hermes balanced compression is not weaker than generic for large file-like outputs', () => {
+  const output = [
+    ...Array.from({ length: 220 }, (_, i) => `/mnt/c/Users/27666/token-slimmer/src/file-${i}.js`),
+    "import fs from 'fs';",
+    'export function loadConfig() { return fs.readFileSync("config.json", "utf8"); }',
+    ...Array.from({ length: 220 }, (_, i) => `/mnt/c/Users/27666/token-slimmer/test/file-${i}.test.js`)
+  ].join('\n');
+  const content = JSON.stringify({ output, exit_code: 0, error: null });
+  const generic = compressToolContent(content, 'balanced', 'generic');
+  const hermes = compressToolContent(content, 'balanced', 'hermes');
+
+  assert.ok(hermes.length <= generic.length);
+});
+
+test('summary cache replaces repeated large tool output on second occurrence when enabled', () => {
+  const cacheDir = fs.mkdtempSync(path.join(os.tmpdir(), 'token-slimmer-summary-cache-'));
+  try {
+    const content = [
+      "import fs from 'fs';",
+      'export function readConfig(path) {',
+      '  if (!path) throw new Error("missing path");',
+      '  return fs.readFileSync(path, "utf8");',
+      '}',
+      ...Array.from({ length: 140 }, (_, i) => `function helper${i}() { return ${i}; }`)
+    ].join('\n');
+    const body = {
+      model: 'gpt-test',
+      messages: [{ role: 'tool', content }]
+    };
+    const config = modeConfigFromEnv({
+      MODE: 'safe',
+      SUMMARY_CACHE: '1',
+      SUMMARY_CACHE_DIR: cacheDir,
+      SUMMARY_CACHE_MIN_TOKENS: '10'
+    });
+
+    const first = processChatBody(body, config, createState());
+    const second = processChatBody(body, config, createState());
+
+    assert.equal(first.body.messages[0].content, content);
+    assert.match(second.body.messages[0].content, /\[Token Slimmer cached repeated tool output\]/);
+    assert.match(second.body.messages[0].content, /summary:/);
+    assert.ok(second.report.breakdown.summaryCache > 0);
+    const files = fs.readdirSync(cacheDir);
+    assert.equal(files.length, 1);
+    const cached = JSON.parse(fs.readFileSync(path.join(cacheDir, files[0]), 'utf8'));
+    assert.equal(cached.rawContent, undefined);
+    assert.ok(JSON.stringify(cached).length < content.length);
+  } finally {
+    fs.rmSync(cacheDir, { recursive: true, force: true });
+  }
+});
+
+test('summary cache disabled preserves existing behavior', () => {
+  const content = Array.from({ length: 120 }, (_, i) => `function repeated${i}() { return ${i}; }`).join('\n');
+  const body = {
+    model: 'gpt-test',
+    messages: [{ role: 'tool', content }]
+  };
+  const result = processChatBody(body, modeConfigFromEnv({
+    MODE: 'safe',
+    SUMMARY_CACHE: '0',
+    SUMMARY_CACHE_MIN_TOKENS: '10'
+  }), createState());
+
+  assert.equal(result.body.messages[0].content, content);
+  assert.equal(result.report.breakdown.summaryCache, 0);
+});
+
+test('summary cache does not cache sensitive content', () => {
+  const cacheDir = fs.mkdtempSync(path.join(os.tmpdir(), 'token-slimmer-sensitive-cache-'));
+  try {
+    const content = [
+      '$ node deploy.js',
+      'API_KEY=sk-secretsecretsecret',
+      'Error: failed to deploy',
+      'exit code: 1',
+      ...Array.from({ length: 120 }, (_, i) => `log line ${i}`)
+    ].join('\n');
+    const body = {
+      model: 'gpt-test',
+      messages: [{ role: 'tool', content }]
+    };
+    const config = modeConfigFromEnv({
+      MODE: 'safe',
+      SUMMARY_CACHE: '1',
+      SUMMARY_CACHE_DIR: cacheDir,
+      SUMMARY_CACHE_MIN_TOKENS: '10'
+    });
+
+    const first = processChatBody(body, config, createState());
+    const second = processChatBody(body, config, createState());
+
+    assert.equal(first.body.messages[0].content, content);
+    assert.equal(second.body.messages[0].content, content);
+    assert.equal(fs.existsSync(cacheDir) ? fs.readdirSync(cacheDir).length : 0, 0);
+  } finally {
+    fs.rmSync(cacheDir, { recursive: true, force: true });
+  }
+});
+
+test('file/code summary includes imports and functions', () => {
+  const summary = summarizeToolOutput([
+    "import path from 'path';",
+    'export function loadFile(name) {',
+    '  return path.resolve(name);',
+    '}',
+    'class Reader {}'
+  ].join('\n'), 'code');
+
+  assert.match(summary, /imports:/);
+  assert.match(summary, /import path from 'path'/);
+  assert.match(summary, /classes_functions_signatures:/);
+  assert.match(summary, /export function loadFile/);
+});
+
+test('shell/log summary includes errors and exit code', () => {
+  const summary = summarizeToolOutput([
+    '$ npm test',
+    'Error: failed at C:\\repo\\test.js',
+    '    at run (C:\\repo\\test.js:10:2)',
+    'exit code: 1'
+  ].join('\n'), 'shell');
+
+  assert.match(summary, /commands:/);
+  assert.match(summary, /errors_warnings:/);
+  assert.match(summary, /exit_codes:/);
+  assert.match(summary, /exit code: 1/);
 });
 
 test('balanced mode does not strip tools', () => {

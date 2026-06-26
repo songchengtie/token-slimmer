@@ -91,14 +91,14 @@ function loadRequest(file) {
 }
 
 function runMode(body, run) {
-  const config = modeConfigFromEnv(run.env);
+  const config = modeConfigFromEnv({ ...process.env, ...run.env });
   const state = createState();
   if (config.mode === 'aggressive' && config.stripTools) {
     processChatBody(body, config, state);
   }
   const processed = processChatBody(body, config, state);
   const { report } = processed;
-  report.xray = buildXRay(body, processed.body);
+  report.xray = buildXRay(body, processed.body, report.providerProfile);
   return report;
 }
 
@@ -126,18 +126,19 @@ function recommendedUse(mode) {
 }
 
 function reportForFile(file, body) {
-  const original = estimatePromptTokens(body);
+  const original = estimatePromptTokens(body, modeConfigFromEnv(process.env).providerProfile);
   const modes = [];
   for (const run of RUNS) {
     const report = runMode(body, run);
     modes.push({
       mode: run.label,
-      originalTokens: original,
+      originalTokens: report.beforeTokens,
       compressedTokens: report.afterTokens,
       savedTokens: report.savedTokens,
-      savedPercent: original > 0 ? Number(((report.savedTokens / original) * 100).toFixed(1)) : 0,
+      savedPercent: report.beforeTokens > 0 ? Number(((report.savedTokens / report.beforeTokens) * 100).toFixed(1)) : 0,
       schemaSlimmingSaved: report.breakdown.toolSchemaSlimming,
       contentCompressionSaved: report.breakdown.toolOutputCompression,
+      summaryCacheSaved: report.breakdown.summaryCache || 0,
       toolsStrippingSaved: report.breakdown.toolsStripping,
       xrayBefore: report.xray.tokenBreakdownBefore,
       xrayAfter: report.xray.tokenBreakdownAfter,
@@ -157,7 +158,7 @@ function printFileReport(fileReport) {
   console.log(`File: ${path.relative(process.cwd(), fileReport.file)}`);
   console.log(`Original estimated tokens: ${original}`);
   console.log(`X-Ray before: tools=${xrayBefore.toolsSchema || 0} system=${xrayBefore.systemMessages || 0} user=${xrayBefore.userMessages || 0} assistant=${xrayBefore.assistantMessages || 0} tool=${xrayBefore.toolMessages || 0} function=${xrayBefore.functionMessages || 0} other=${xrayBefore.otherMessages || 0}`);
-  console.log('mode                       original  compressed  saved  saved%  schema  output  strip  xraySaved.tools  xraySaved.system  xraySaved.user  xraySaved.assistant  xraySaved.tool/function  xraySaved.other');
+  console.log('mode                       original  compressed  saved  saved%  schema  output  summary  strip  xraySaved.tools  xraySaved.system  xraySaved.user  xraySaved.assistant  xraySaved.tool/function  xraySaved.other');
 
   for (const report of fileReport.modes) {
     const xraySaved = report.xraySaved;
@@ -169,6 +170,7 @@ function printFileReport(fileReport) {
       `${report.savedPercent.toFixed(1)}%`.padStart(7),
       String(report.schemaSlimmingSaved).padStart(7),
       String(report.contentCompressionSaved).padStart(7),
+      String(report.summaryCacheSaved || 0).padStart(7),
       String(report.toolsStrippingSaved).padStart(6),
       String(xraySaved.toolsSchema || 0).padStart(6),
       String(xraySaved.systemMessages || 0).padStart(7),
@@ -190,7 +192,7 @@ function addBreakdown(target, source) {
 
 function printAggregate(aggregate) {
   console.log('Corpus aggregate:');
-  console.log('mode                       original  compressed  saved  saved%  schema  output  strip');
+  console.log('mode                       original  compressed  saved  saved%  schema  output  summary  strip');
   for (const run of RUNS) {
     const data = aggregate[run.label];
     const saved = data.before - data.after;
@@ -202,6 +204,7 @@ function printAggregate(aggregate) {
       percent(saved, data.before).padStart(7),
       String(data.schemaSaved || 0).padStart(7),
       String(data.contentSaved || 0).padStart(7),
+      String(data.summaryCacheSaved || 0).padStart(7),
       String(data.stripSaved || 0).padStart(6)
     ].join('  '));
   }
@@ -261,13 +264,13 @@ function writeReports(fileReports, aggregate, sourceArgs) {
       ? 'This summary is generated from local captured Hermes/OpenAI-compatible request JSON files. Synthetic samples are not used as real-world results in this section.'
       : 'This summary is generated from the provided benchmark corpus. Treat synthetic samples as shape coverage, not real-world savings.',
     '',
-    '| Mode | Original | Compressed | Saved | Saved % | Schema | Content/Output | Strip Tools | Recommended use |',
-    '| --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: | --- |'
+    '| Mode | Original | Compressed | Saved | Saved % | Schema | Content/Output | Summary Cache | Strip Tools | Recommended use |',
+    '| --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | --- |'
   ];
   for (const run of RUNS) {
     const data = aggregate[run.label];
     const saved = data.before - data.after;
-    lines.push(`| ${run.label} | ${number(data.before)} | ${number(data.after)} | ${number(saved)} | ${percent(saved, data.before)} | ${number(data.schemaSaved)} | ${number(data.contentSaved)} | ${number(data.stripSaved)} | ${recommendedUse(run.label)} |`);
+    lines.push(`| ${run.label} | ${number(data.before)} | ${number(data.after)} | ${number(saved)} | ${percent(saved, data.before)} | ${number(data.schemaSaved)} | ${number(data.contentSaved)} | ${number(data.summaryCacheSaved)} | ${number(data.stripSaved)} | ${recommendedUse(run.label)} |`);
   }
   lines.push('');
   appendXRaySection(lines, aggregate);
@@ -275,10 +278,10 @@ function writeReports(fileReports, aggregate, sourceArgs) {
   lines.push('', '## File Details', '');
   for (const fileReport of fileReports) {
     lines.push(`### ${path.relative(process.cwd(), fileReport.file)}`, '');
-    lines.push('| Mode | Original | Compressed | Saved | Saved % | Schema | Content/Output | Strip Tools |');
-    lines.push('| --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: |');
+    lines.push('| Mode | Original | Compressed | Saved | Saved % | Schema | Content/Output | Summary Cache | Strip Tools |');
+    lines.push('| --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: |');
     for (const mode of fileReport.modes) {
-      lines.push(`| ${mode.mode} | ${number(mode.originalTokens)} | ${number(mode.compressedTokens)} | ${number(mode.savedTokens)} | ${mode.savedPercent.toFixed(1)}% | ${number(mode.schemaSlimmingSaved)} | ${number(mode.contentCompressionSaved)} | ${number(mode.toolsStrippingSaved)} |`);
+      lines.push(`| ${mode.mode} | ${number(mode.originalTokens)} | ${number(mode.compressedTokens)} | ${number(mode.savedTokens)} | ${mode.savedPercent.toFixed(1)}% | ${number(mode.schemaSlimmingSaved)} | ${number(mode.contentCompressionSaved)} | ${number(mode.summaryCacheSaved)} | ${number(mode.toolsStrippingSaved)} |`);
     }
     lines.push('');
   }
@@ -325,6 +328,7 @@ function main() {
     after: 0,
     schemaSaved: 0,
     contentSaved: 0,
+    summaryCacheSaved: 0,
     stripSaved: 0,
     xrayBefore: emptyTokenBreakdown(),
     xrayAfter: emptyTokenBreakdown(),
@@ -345,6 +349,7 @@ function main() {
         modeAggregate.after += modeReport.compressedTokens;
         modeAggregate.schemaSaved += modeReport.schemaSlimmingSaved;
         modeAggregate.contentSaved += modeReport.contentCompressionSaved;
+        modeAggregate.summaryCacheSaved += modeReport.summaryCacheSaved;
         modeAggregate.stripSaved += modeReport.toolsStrippingSaved;
         addBreakdown(modeAggregate.xrayBefore, modeReport.xrayBefore);
         addBreakdown(modeAggregate.xrayAfter, modeReport.xrayAfter);

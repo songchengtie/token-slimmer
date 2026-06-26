@@ -63,14 +63,14 @@ function main() {
   }
 
   for (const sample of samples) {
-    const original = estimatePromptTokens(sample.body);
+    const original = estimatePromptTokens(sample.body, config.providerProfile);
     const state = createState();
     if (config.mode === 'aggressive' && config.stripTools) {
       processChatBody(sample.body, config, state);
     }
     const { body, report } = processChatBody(sample.body, config, state);
     report.beforeTokens = original;
-    report.xray = buildXRay(sample.body, body);
+    report.xray = buildXRay(sample.body, body, report.providerProfile);
     printReport(sample.name, report);
   }
 }

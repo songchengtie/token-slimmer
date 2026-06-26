@@ -68,6 +68,7 @@ test('proxy forwards chat completions, custom headers, and token report headers'
   assert.equal(response.status, 200);
   assert.equal(response.headers.get('x-upstream-id'), 'abc123');
   assert.equal(response.headers.get('x-token-slimmer-mode'), 'safe');
+  assert.equal(response.headers.get('x-token-slimmer-provider-profile'), 'generic');
   assert.equal(upstreamHeader, 'enabled');
   assert.equal(upstreamBody.messages[0].content, 'hello');
 
@@ -93,11 +94,36 @@ test('/api/config redacts upstream API key and reports auth mode', async () => {
 
   assert.equal(config.listenPort, 4512);
   assert.equal(config.mode, 'aggressive');
+  assert.equal(config.providerProfile, 'generic');
   assert.equal(config.captureEnabled, true);
   assert.equal(config.stripToolsEnabled, true);
   assert.equal(config.authMode, 'configured_upstream_key');
   assert.deepEqual(config.apiKey, { status: 'configured', last4: '1234' });
   assert.equal(serialized.includes('sk-test-full-secret'), false);
+
+  await close(proxy);
+});
+
+test('/api/config and /health include provider and agent profiles', async () => {
+  const app = createApp({
+    env: { PROVIDER_PROFILE: 'qwen', AGENT_PROFILE: 'hermes' },
+    localConfig: { PROVIDER_PROFILE: 'anthropic', AGENT_PROFILE: 'codex' }
+  });
+  const proxy = await listen(app);
+
+  const configResponse = await fetch(`http://127.0.0.1:${proxy.address().port}/api/config`);
+  const config = await configResponse.json();
+  const healthResponse = await fetch(`http://127.0.0.1:${proxy.address().port}/health`);
+  const health = await healthResponse.json();
+
+  assert.equal(config.providerProfile, 'qwen');
+  assert.equal(config.agentProfile, 'hermes');
+  assert.equal(config.fields.PROVIDER_PROFILE.value, 'qwen');
+  assert.equal(config.fields.PROVIDER_PROFILE.lockedByEnv, true);
+  assert.equal(config.fields.AGENT_PROFILE.value, 'hermes');
+  assert.equal(config.fields.AGENT_PROFILE.lockedByEnv, true);
+  assert.equal(health.provider_profile, 'qwen');
+  assert.equal(health.agent_profile, 'hermes');
 
   await close(proxy);
 });

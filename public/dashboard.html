@@ -308,7 +308,11 @@
           <div class="muted">Host</div><div id="configHost" class="value">loading</div>
           <div class="muted">Port</div><div id="configPort" class="value">loading</div>
           <div class="muted">Mode</div><div id="configMode" class="value">loading</div>
+          <div class="muted">Provider profile</div><div id="configProviderProfile" class="value">loading</div>
+          <div class="muted">Agent profile</div><div id="configAgentProfile" class="value">loading</div>
           <div class="muted">Cache-aware</div><div id="configCacheAware" class="value">loading</div>
+          <div class="muted">Summary cache</div><div id="configSummaryCache" class="value">loading</div>
+          <div class="muted">Summary cache min</div><div id="configSummaryCacheMin" class="value">loading</div>
           <div class="muted">Capture</div><div id="configCapture" class="value">loading</div>
           <div class="muted">Capture dir</div><div id="configCaptureDir" class="value">loading</div>
           <div class="muted">Strip tools</div><div id="configStrip" class="value">loading</div>
@@ -346,6 +350,29 @@
               <option value="configured_upstream_key">configured upstream key</option>
             </select>
             <span id="lockAUTH_MODE" class="field-note"></span>
+          </label>
+          <label>
+            Provider Profile
+            <select id="settingsProviderProfile">
+              <option value="generic">generic</option>
+              <option value="openai">openai</option>
+              <option value="anthropic">anthropic</option>
+              <option value="gemini">gemini</option>
+              <option value="deepseek">deepseek</option>
+              <option value="qwen">qwen</option>
+            </select>
+            <span id="lockPROVIDER_PROFILE" class="field-note"></span>
+          </label>
+          <label>
+            Agent Profile
+            <select id="settingsAgentProfile">
+              <option value="generic">generic</option>
+              <option value="hermes">hermes</option>
+              <option value="openclaw">openclaw</option>
+              <option value="codex">codex</option>
+              <option value="claude-code">claude-code</option>
+            </select>
+            <span id="lockAGENT_PROFILE" class="field-note"></span>
           </label>
           <label>
             Upstream API Key
@@ -537,7 +564,11 @@
       $('configHost').textContent = config.host;
       $('configPort').textContent = String(config.listenPort);
       $('configMode').textContent = config.mode;
+      $('configProviderProfile').textContent = config.providerProfile || 'generic';
+      $('configAgentProfile').textContent = config.agentProfile || 'generic';
       $('configCacheAware').textContent = config.cacheAware ? 'on' : 'off';
+      $('configSummaryCache').textContent = config.summaryCacheEnabled ? `on (${config.summaryCacheDir})` : 'off';
+      $('configSummaryCacheMin').textContent = fmt(config.summaryCacheMinTokens || 0);
       $('configCapture').textContent = config.captureEnabled ? 'on' : 'off';
       $('configCaptureDir').textContent = config.captureDir;
       $('configStrip').textContent = config.stripToolsEnabled ? 'on' : 'off';
@@ -562,6 +593,8 @@
       $('settingsUpstreamUrl').value = config.upstreamUrl;
       $('settingsMode').value = config.mode;
       $('settingsAuthMode').value = config.authMode;
+      $('settingsProviderProfile').value = config.providerProfile || 'generic';
+      $('settingsAgentProfile').value = config.agentProfile || 'generic';
       $('settingsApiKey').value = '';
       $('settingsApiKey').placeholder = config.apiKey.status === 'configured'
         ? `configured, ending in ${config.apiKey.last4}; blank keeps existing`
@@ -576,6 +609,8 @@
       applyLock('UPSTREAM_URL', 'settingsUpstreamUrl');
       applyLock('MODE', 'settingsMode');
       applyLock('AUTH_MODE', 'settingsAuthMode');
+      applyLock('PROVIDER_PROFILE', 'settingsProviderProfile');
+      applyLock('AGENT_PROFILE', 'settingsAgentProfile');
       applyLock('UPSTREAM_API_KEY', 'settingsApiKey');
       applyLock('CAPTURE_REQUESTS', 'settingsCapture');
       applyLock('CACHE_AWARE', 'settingsCacheAware');
@@ -589,6 +624,8 @@
       if (!fieldLocked('UPSTREAM_URL')) payload.UPSTREAM_URL = $('settingsUpstreamUrl').value;
       if (!fieldLocked('MODE')) payload.MODE = $('settingsMode').value;
       if (!fieldLocked('AUTH_MODE')) payload.AUTH_MODE = $('settingsAuthMode').value;
+      if (!fieldLocked('PROVIDER_PROFILE')) payload.PROVIDER_PROFILE = $('settingsProviderProfile').value;
+      if (!fieldLocked('AGENT_PROFILE')) payload.AGENT_PROFILE = $('settingsAgentProfile').value;
       if (!fieldLocked('CAPTURE_REQUESTS')) payload.CAPTURE_REQUESTS = booleanValue('settingsCapture');
       if (!fieldLocked('CACHE_AWARE')) payload.CACHE_AWARE = booleanValue('settingsCacheAware');
       if (!fieldLocked('STRIP_TOOLS')) payload.STRIP_TOOLS = booleanValue('settingsStripTools');
@@ -651,6 +688,7 @@
           <td><div class="breakdown">
             <span class="pill">schema ${fmt(breakdown.schemaSlimming)}</span>
             <span class="pill">content ${fmt(breakdown.contentCompression)}</span>
+            <span class="pill">summary ${fmt(breakdown.summaryCache)}</span>
             <span class="pill">strip ${fmt(breakdown.toolsStripping)}</span>
           </div></td>
           <td><span class="badge ${statusKind}">${req.statusCode || ''}</span></td>
@@ -723,7 +761,7 @@
           <div class="muted">Stream</div><div>${req.stream}</div>
           <div class="muted">Before / after / saved</div><div>${fmt(req.originalTokens)} / ${fmt(req.compressedTokens)} / ${fmt(req.savedTokens)}</div>
           <div class="muted">Tools stripped</div><div>${req.toolsStripped}</div>
-          <div class="muted">Compression breakdown</div><div>schema ${fmt(req.breakdown?.schemaSlimming)}, content ${fmt(req.breakdown?.contentCompression)}, strip ${fmt(req.breakdown?.toolsStripping)}</div>
+          <div class="muted">Compression breakdown</div><div>schema ${fmt(req.breakdown?.schemaSlimming)}, content ${fmt(req.breakdown?.contentCompression)}, summary ${fmt(req.breakdown?.summaryCache)}, strip ${fmt(req.breakdown?.toolsStripping)}</div>
         </div>
         <table><thead><tr><th>Category</th><th class="num">Before</th><th class="num">After</th><th class="num">Saved</th></tr></thead><tbody>${rows}</tbody></table>
         <h2 style="margin-top: 12px;">Top Token Wasters</h2>

@@ -10,8 +10,10 @@ const {
   estimateTokens,
   makeReportHeaders,
   modeConfigFromEnv,
+  normalizeAgentProfile,
   processChatBody
 } = require('./lib/slimmer');
+const { normalizeProviderProfile } = require('./lib/tokenizer');
 
 const HOP_BY_HOP_HEADERS = new Set([
   'connection',
@@ -49,9 +51,14 @@ const DEFAULT_SETTINGS = {
   MODE: 'safe',
   AUTH_MODE: 'forward_client_authorization',
   UPSTREAM_API_KEY: '',
+  PROVIDER_PROFILE: 'generic',
+  AGENT_PROFILE: 'generic',
   CAPTURE_REQUESTS: false,
   CAPTURE_DIR: 'captures',
   CACHE_AWARE: false,
+  SUMMARY_CACHE: false,
+  SUMMARY_CACHE_DIR: '.token-slimmer-cache',
+  SUMMARY_CACHE_MIN_TOKENS: 1200,
   STRIP_TOOLS: false,
   HEARTBEAT_INTERVAL: 3,
   SLIM_TOOLS: true,
@@ -63,8 +70,13 @@ const EDITABLE_FIELDS = new Set([
   'MODE',
   'AUTH_MODE',
   'UPSTREAM_API_KEY',
+  'PROVIDER_PROFILE',
+  'AGENT_PROFILE',
   'CAPTURE_REQUESTS',
   'CACHE_AWARE',
+  'SUMMARY_CACHE',
+  'SUMMARY_CACHE_DIR',
+  'SUMMARY_CACHE_MIN_TOKENS',
   'STRIP_TOOLS',
   'HEARTBEAT_INTERVAL'
 ]);
@@ -112,13 +124,25 @@ function normalizeAuthMode(value) {
   return mode === 'configured_upstream_key' ? mode : 'forward_client_authorization';
 }
 
+function normalizeRuntimeProviderProfile(value) {
+  return normalizeProviderProfile(value);
+}
+
+function normalizeRuntimeAgentProfile(value) {
+  return normalizeAgentProfile(value);
+}
+
 function normalizeSettings(input) {
   const settings = { ...DEFAULT_SETTINGS, ...(input || {}) };
   settings.PORT = parsePositiveInt(settings.PORT, DEFAULT_SETTINGS.PORT);
   settings.MODE = normalizeMode(settings.MODE);
+  settings.PROVIDER_PROFILE = normalizeRuntimeProviderProfile(settings.PROVIDER_PROFILE);
+  settings.AGENT_PROFILE = normalizeRuntimeAgentProfile(settings.AGENT_PROFILE);
   settings.AUTH_MODE = normalizeAuthMode(settings.AUTH_MODE);
   settings.CAPTURE_REQUESTS = parseBool(settings.CAPTURE_REQUESTS, DEFAULT_SETTINGS.CAPTURE_REQUESTS);
   settings.CACHE_AWARE = parseBool(settings.CACHE_AWARE, DEFAULT_SETTINGS.CACHE_AWARE);
+  settings.SUMMARY_CACHE = parseBool(settings.SUMMARY_CACHE, DEFAULT_SETTINGS.SUMMARY_CACHE);
+  settings.SUMMARY_CACHE_MIN_TOKENS = parsePositiveInt(settings.SUMMARY_CACHE_MIN_TOKENS, DEFAULT_SETTINGS.SUMMARY_CACHE_MIN_TOKENS);
   settings.STRIP_TOOLS = parseBool(settings.STRIP_TOOLS, DEFAULT_SETTINGS.STRIP_TOOLS);
   if (settings.CACHE_AWARE) settings.STRIP_TOOLS = false;
   settings.HEARTBEAT_INTERVAL = parsePositiveInt(settings.HEARTBEAT_INTERVAL, DEFAULT_SETTINGS.HEARTBEAT_INTERVAL);
@@ -127,6 +151,7 @@ function normalizeSettings(input) {
   settings.UPSTREAM_URL = normalizeBaseUrl(settings.UPSTREAM_URL || DEFAULT_SETTINGS.UPSTREAM_URL);
   settings.HOST = String(settings.HOST || DEFAULT_SETTINGS.HOST);
   settings.CAPTURE_DIR = String(settings.CAPTURE_DIR || DEFAULT_SETTINGS.CAPTURE_DIR);
+  settings.SUMMARY_CACHE_DIR = String(settings.SUMMARY_CACHE_DIR || DEFAULT_SETTINGS.SUMMARY_CACHE_DIR);
   settings.UPSTREAM_API_KEY = String(settings.UPSTREAM_API_KEY || '');
   return settings;
 }
@@ -182,6 +207,11 @@ function legacyOptionsToSettings(options) {
     out.SLIM_TOOLS = options.modeConfig.slimTools;
     out.COMPRESS_CONTENT = options.modeConfig.compressContent;
     out.CACHE_AWARE = options.modeConfig.cacheAware;
+    out.SUMMARY_CACHE = options.modeConfig.summaryCache;
+    out.SUMMARY_CACHE_DIR = options.modeConfig.summaryCacheDir;
+    out.SUMMARY_CACHE_MIN_TOKENS = options.modeConfig.summaryCacheMinTokens;
+    out.PROVIDER_PROFILE = options.modeConfig.providerProfile;
+    out.AGENT_PROFILE = options.modeConfig.agentProfile;
   }
   return out;
 }
@@ -189,7 +219,12 @@ function legacyOptionsToSettings(options) {
 function settingsToModeEnv(settings) {
   return {
     MODE: settings.MODE,
+    PROVIDER_PROFILE: settings.PROVIDER_PROFILE,
+    AGENT_PROFILE: settings.AGENT_PROFILE,
     CACHE_AWARE: settings.CACHE_AWARE ? '1' : '0',
+    SUMMARY_CACHE: settings.SUMMARY_CACHE ? '1' : '0',
+    SUMMARY_CACHE_DIR: settings.SUMMARY_CACHE_DIR,
+    SUMMARY_CACHE_MIN_TOKENS: String(settings.SUMMARY_CACHE_MIN_TOKENS),
     SLIM_TOOLS: settings.SLIM_TOOLS ? '1' : '0',
     COMPRESS_CONTENT: settings.COMPRESS_CONTENT ? '1' : '0',
     STRIP_TOOLS: settings.STRIP_TOOLS ? '1' : '0',
@@ -335,6 +370,7 @@ function logReport(report, req) {
     `saved=${saved} (${pct}%)`,
     `schema=${report.breakdown.toolSchemaSlimming}`,
     `output=${report.breakdown.toolOutputCompression}`,
+    `summaryCache=${report.breakdown.summaryCache || 0}`,
     `strip=${report.breakdown.toolsStripping}`
   ];
   if (report.toolsStripped) parts.push('tools=stripped');
@@ -386,6 +422,7 @@ function createRequestStatsRecord(stats, req, report) {
     breakdown: {
       schemaSlimming: report?.breakdown?.toolSchemaSlimming || 0,
       contentCompression: report?.breakdown?.toolOutputCompression || 0,
+      summaryCache: report?.breakdown?.summaryCache || 0,
       toolsStripping: report?.breakdown?.toolsStripping || 0
     },
     tokenBreakdownBefore: report?.xray?.tokenBreakdownBefore || emptyTokenBreakdown(),
@@ -498,9 +535,14 @@ function configPayload(config) {
     host: settings.HOST,
     upstreamUrl: settings.UPSTREAM_URL,
     mode: settings.MODE,
+    providerProfile: settings.PROVIDER_PROFILE,
+    agentProfile: settings.AGENT_PROFILE,
     captureEnabled: settings.CAPTURE_REQUESTS,
     captureDir: settings.CAPTURE_DIR,
     cacheAware: settings.CACHE_AWARE,
+    summaryCacheEnabled: settings.SUMMARY_CACHE,
+    summaryCacheDir: settings.SUMMARY_CACHE_DIR,
+    summaryCacheMinTokens: settings.SUMMARY_CACHE_MIN_TOKENS,
     stripToolsEnabled: settings.STRIP_TOOLS,
     heartbeatInterval: settings.HEARTBEAT_INTERVAL,
     authMode: settings.AUTH_MODE,
@@ -512,6 +554,8 @@ function configPayload(config) {
       PORT: fieldPayload('PORT', settings.PORT, config, { editable: false, restartRequired: true }),
       UPSTREAM_URL: fieldPayload('UPSTREAM_URL', settings.UPSTREAM_URL, config, { editable: true }),
       MODE: fieldPayload('MODE', settings.MODE, config, { editable: true }),
+      PROVIDER_PROFILE: fieldPayload('PROVIDER_PROFILE', settings.PROVIDER_PROFILE, config, { editable: true }),
+      AGENT_PROFILE: fieldPayload('AGENT_PROFILE', settings.AGENT_PROFILE, config, { editable: true }),
       AUTH_MODE: fieldPayload('AUTH_MODE', settings.AUTH_MODE, config, { editable: true }),
       UPSTREAM_API_KEY: {
         ...apiKeyStatus(settings.UPSTREAM_API_KEY),
@@ -521,6 +565,9 @@ function configPayload(config) {
       },
       CAPTURE_REQUESTS: fieldPayload('CAPTURE_REQUESTS', settings.CAPTURE_REQUESTS, config, { editable: true }),
       CACHE_AWARE: fieldPayload('CACHE_AWARE', settings.CACHE_AWARE, config, { editable: true }),
+      SUMMARY_CACHE: fieldPayload('SUMMARY_CACHE', settings.SUMMARY_CACHE, config, { editable: true }),
+      SUMMARY_CACHE_DIR: fieldPayload('SUMMARY_CACHE_DIR', settings.SUMMARY_CACHE_DIR, config, { editable: true }),
+      SUMMARY_CACHE_MIN_TOKENS: fieldPayload('SUMMARY_CACHE_MIN_TOKENS', settings.SUMMARY_CACHE_MIN_TOKENS, config, { editable: true }),
       STRIP_TOOLS: fieldPayload('STRIP_TOOLS', settings.STRIP_TOOLS, config, { editable: true }),
       HEARTBEAT_INTERVAL: fieldPayload('HEARTBEAT_INTERVAL', settings.HEARTBEAT_INTERVAL, config, { editable: true })
     }
@@ -578,12 +625,27 @@ function settingsPatchFromBody(body) {
     patch.UPSTREAM_URL = input.UPSTREAM_URL ?? input.upstreamUrl;
   }
   if (input.MODE != null || input.mode != null) patch.MODE = input.MODE ?? input.mode;
+  if (input.PROVIDER_PROFILE != null || input.providerProfile != null) {
+    patch.PROVIDER_PROFILE = input.PROVIDER_PROFILE ?? input.providerProfile;
+  }
+  if (input.AGENT_PROFILE != null || input.agentProfile != null) {
+    patch.AGENT_PROFILE = input.AGENT_PROFILE ?? input.agentProfile;
+  }
   if (input.AUTH_MODE != null || input.authMode != null) patch.AUTH_MODE = input.AUTH_MODE ?? input.authMode;
   if (input.CAPTURE_REQUESTS != null || input.captureEnabled != null) {
     patch.CAPTURE_REQUESTS = input.CAPTURE_REQUESTS ?? input.captureEnabled;
   }
   if (input.CACHE_AWARE != null || input.cacheAware != null) {
     patch.CACHE_AWARE = input.CACHE_AWARE ?? input.cacheAware;
+  }
+  if (input.SUMMARY_CACHE != null || input.summaryCacheEnabled != null) {
+    patch.SUMMARY_CACHE = input.SUMMARY_CACHE ?? input.summaryCacheEnabled;
+  }
+  if (input.SUMMARY_CACHE_DIR != null || input.summaryCacheDir != null) {
+    patch.SUMMARY_CACHE_DIR = input.SUMMARY_CACHE_DIR ?? input.summaryCacheDir;
+  }
+  if (input.SUMMARY_CACHE_MIN_TOKENS != null || input.summaryCacheMinTokens != null) {
+    patch.SUMMARY_CACHE_MIN_TOKENS = input.SUMMARY_CACHE_MIN_TOKENS ?? input.summaryCacheMinTokens;
   }
   if (input.STRIP_TOOLS != null || input.stripToolsEnabled != null) {
     patch.STRIP_TOOLS = input.STRIP_TOOLS ?? input.stripToolsEnabled;
@@ -674,17 +736,22 @@ async function testUpstream(config) {
 }
 
 function basicReport(body, modeConfig) {
+  const providerProfile = modeConfig.providerProfile || 'generic';
+  const agentProfile = modeConfig.agentProfile || 'generic';
   const estimate = body && typeof body === 'object'
-    ? estimateTokens(JSON.stringify(body))
+    ? estimateTokens(JSON.stringify(body), providerProfile)
     : 0;
   return {
     mode: modeConfig.mode,
+    providerProfile,
+    agentProfile,
     beforeTokens: estimate,
     afterTokens: estimate,
     savedTokens: 0,
     breakdown: {
       toolSchemaSlimming: 0,
       toolOutputCompression: 0,
+      summaryCache: 0,
       toolsStripping: 0
     },
     toolsStripped: false,
@@ -729,7 +796,12 @@ function createApp(options = {}) {
       status: 'ok',
       upstream: config.settings.UPSTREAM_URL,
       mode: config.modeConfig.mode,
+      provider_profile: config.modeConfig.providerProfile,
+      agent_profile: config.modeConfig.agentProfile,
       cache_aware: config.modeConfig.cacheAware,
+      summary_cache: config.modeConfig.summaryCache,
+      summary_cache_dir: config.modeConfig.summaryCacheDir,
+      summary_cache_min_tokens: config.modeConfig.summaryCacheMinTokens,
       slim_tools: config.modeConfig.slimTools,
       compress_content: config.modeConfig.compressContent,
       strip_tools: config.modeConfig.stripTools,
@@ -765,7 +837,7 @@ function createApp(options = {}) {
     } else {
       report = basicReport(body, config.modeConfig);
     }
-    report.xray = buildXRay(req.body, body);
+    report.xray = buildXRay(req.body, body, report.providerProfile);
     statsRecord = createRequestStatsRecord(config.stats, req, report);
 
     try {
@@ -808,8 +880,9 @@ if (require.main === module) {
   app.listen(bootConfig.settings.PORT, bootConfig.settings.HOST, () => {
     console.log(`Token Slimmer proxy running on http://${bootConfig.settings.HOST}:${bootConfig.settings.PORT}`);
     console.log(`Upstream: ${bootConfig.settings.UPSTREAM_URL}`);
-    console.log(`MODE=${bootConfig.modeConfig.mode}, SLIM_TOOLS=${bootConfig.modeConfig.slimTools}, COMPRESS_CONTENT=${bootConfig.modeConfig.compressContent}`);
+    console.log(`MODE=${bootConfig.modeConfig.mode}, PROVIDER_PROFILE=${bootConfig.modeConfig.providerProfile}, AGENT_PROFILE=${bootConfig.modeConfig.agentProfile}, SLIM_TOOLS=${bootConfig.modeConfig.slimTools}, COMPRESS_CONTENT=${bootConfig.modeConfig.compressContent}`);
     console.log(`CACHE_AWARE=${bootConfig.modeConfig.cacheAware}, STRIP_TOOLS=${bootConfig.modeConfig.stripTools}, HEARTBEAT_INTERVAL=${bootConfig.modeConfig.heartbeatInterval}`);
+    console.log(`SUMMARY_CACHE=${bootConfig.modeConfig.summaryCache}, SUMMARY_CACHE_DIR=${bootConfig.modeConfig.summaryCacheDir}, SUMMARY_CACHE_MIN_TOKENS=${bootConfig.modeConfig.summaryCacheMinTokens}`);
     console.log(bootConfig.settings.AUTH_MODE === 'configured_upstream_key' ? 'Auth: using configured upstream key' : 'Auth: forwarding client Authorization header');
     if (bootConfig.settings.CAPTURE_REQUESTS) {
       console.log(`CAPTURE_REQUESTS=1, CAPTURE_DIR=${bootConfig.settings.CAPTURE_DIR}`);

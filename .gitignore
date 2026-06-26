@@ -1,6 +1,7 @@
 node_modules/
 npm-debug.log*
 .env
+.token-slimmer-cache/
 
 server.log
 captures/

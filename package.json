@@ -10,7 +10,7 @@
     "bench": "node bench/bench.js",
     "bench:corpus": "node bench/corpus.js",
     "eval:modes": "node bench/corpus.js",
-    "lint": "node --check server.js && node --check lib/slimmer.js && node --check bench/bench.js && node --check bench/corpus.js"
+    "lint": "node --check server.js && node --check lib/slimmer.js && node --check lib/tokenizer.js && node --check lib/summary-cache.js && node --check bench/bench.js && node --check bench/corpus.js"
   },
   "dependencies": {
     "express": "^4.18.2"
