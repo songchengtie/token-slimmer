@@ -73,6 +73,7 @@ cannot be edited there.
 ## Dashboard
 
 The dashboard is a local-first status page served by the same Express process:
+<img width="2556" height="1037" alt="image" src="https://github.com/user-attachments/assets/e19c5c5c-f5ed-4f25-9dda-8f6509926dc3" />
 
 ```text
 http://localhost:3999/dashboard
@@ -133,6 +134,7 @@ never returned by `/api/config` or shown in the dashboard.
 
 Agent workflows often repeat large tools schemas and accumulate long tool
 outputs or history messages. Token X-Ray estimates prompt tokens by category:
+<img width="2517" height="764" alt="image" src="https://github.com/user-attachments/assets/c7972305-c63c-4f6a-8b45-20989b81d2fd" />
 
 - top-level tools schema
 - system messages
